@@ -1,0 +1,124 @@
+name: Package Validation and Approval
+
+on:
+  pull_request:
+    branches:
+      - packages
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Vault
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed package
+        id: changed-package
+        run: |
+          # Identify the package directory in the PR
+          # We look for a directory that was modified and contains the required files
+          PKG_DIR=""
+          # List all directories containing changed files
+          for dir in $(git diff --name-only origin/packages...HEAD | xargs -I {} dirname {} | sort -u); do
+            # Check if this directory looks like a package (contains a Makefile and README.md)
+            if [ -f "$dir/Makefile" ] && [ -f "$dir/README.md" ]; then
+              PKG_DIR=$dir
+              break
+            fi
+          done
+
+          if [ -z "$PKG_DIR" ]; then
+            echo "Error: No valid package directory found in PR. A package must contain a Makefile and README.md."
+            exit 1
+          fi
+          
+          echo "package_path=$PKG_DIR" >> $GITHUB_OUTPUT
+          echo "package_name=$(basename $PKG_DIR)" >> $GITHUB_OUTPUT
+          echo "Found package: $(basename $PKG_DIR) at $PKG_DIR"
+
+      - name: Validate required files
+        run: |
+          PKG_DIR="${{ steps.changed-package.outputs.package_path }}"
+          PKG_NAME="${{ steps.changed-package.outputs.package_name }}"
+          
+          echo "Validating required files for $PKG_NAME..."
+          
+          REQUIRED_FILES=(
+            "Makefile"
+            "$PKG_NAME.aui"
+            "$PKG_NAME.aum"
+            "$PKG_NAME.test.aum"
+            "README.md"
+          )
+          
+          MISSING=0
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$PKG_DIR/$f" ]; then
+              echo "::error file=$PKG_DIR/$f::Missing required file: $f"
+              MISSING=1
+            fi
+          done
+          
+          if [ "$MISSING" -eq 1 ]; then
+            exit 1
+          fi
+          echo "All required files are present."
+
+      - name: Setup OCaml
+        uses: ocaml/setup-ocaml@v2
+        with:
+          ocaml-compiler: 4.14.x
+
+      - name: Clone and Build Austral
+        run: |
+          git clone https://github.com/austral/austral.git
+          cd austral
+          # Install dependencies via opam if needed
+          opam install . --deps-only -y || true
+          make
+          # Add the built compiler to PATH
+          echo "$(pwd)" >> $GITHUB_PATH
+
+      - name: Test Package
+        run: |
+          PKG_DIR="${{ steps.changed-package.outputs.package_path }}"
+          PKG_NAME="${{ steps.changed-package.outputs.package_name }}"
+          
+          # Copy the package into the austral directory as requested
+          cp -r "$PKG_DIR" austral/
+          
+          cd "austral/$PKG_NAME"
+          echo "Running make inside $PKG_NAME..."
+          make
+          echo "Running tests for $PKG_NAME..."
+          make test
+
+      - name: Approve PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr review ${{ github.event.pull_request.number }} --approve --body "✅ Automated approval: All tests passed for package \`${{ steps.changed-package.outputs.package_name }}\`."
+
+      - name: Create Issue for Final Review
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Review required for package: ${{ steps.changed-package.outputs.package_name }}" \
+            --body "The package **${{ steps.changed-package.outputs.package_name }}** has successfully passed all automated tests. 
+
+            PR: #${{ github.event.pull_request.number }}
+            
+            Please perform a final manual review before merging to \`main\`.
+            
+            cc @suissa" \
+            --assignee suissa

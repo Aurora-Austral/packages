@@ -29,3 +29,5 @@ To run the tests:
 ```bash
 make test
 ```
+
+@author: github.com/suissa
