@@ -1,0 +1,41 @@
+module body balance is
+    record Balance : Linear is
+        amount: Nat64;
+    end;
+
+    record BalancePair : Linear is
+        first: Balance;
+        second: Balance;
+    end;
+
+    function InitialBalance(amount: Nat64): Balance is
+        return Balance(amount => amount);
+    end;
+
+    function Split(b: Balance): BalancePair is
+        let { amount: Nat64 } := b;
+        let half: Nat64 := amount / 2;
+        return BalancePair(
+            first => Balance(amount => half),
+            second => Balance(amount => amount - half)
+        );
+    end;
+
+    function ConsumePair(pair: BalancePair): Unit is
+        let { first as b1: Balance, second as b2: Balance } := pair;
+        Spend(b1);
+        Spend(b2);
+        return nil;
+    end;
+
+    function Merge(b1: Balance, b2: Balance): Balance is
+        let { amount as a1: Nat64 } := b1;
+        let { amount as a2: Nat64 } := b2;
+        return Balance(amount => a1 + a2);
+    end;
+
+    function Spend(b: Balance): Unit is
+        let { amount: Nat64 } := b;
+        return nil;
+    end;
+end module body.

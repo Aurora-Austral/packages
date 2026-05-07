@@ -1,0 +1,16 @@
+module balance is
+    record Balance : Linear is
+        amount: Nat64;
+    end;
+
+    record BalancePair : Linear is
+        first: Balance;
+        second: Balance;
+    end;
+
+    function InitialBalance(amount: Nat64): Balance;
+    function Split(b: Balance): BalancePair;
+    function ConsumePair(pair: BalancePair): Unit;
+    function Merge(b1: Balance, b2: Balance): Balance;
+    function Spend(b: Balance): Unit;
+end module.

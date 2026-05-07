@@ -1,0 +1,7 @@
+module db is
+    type Transaction : Linear;
+
+    function BeginTransaction(): Transaction;
+    function Commit(tx: Transaction): Unit;
+    function Rollback(tx: Transaction): Unit;
+end module.

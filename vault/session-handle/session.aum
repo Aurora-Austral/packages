@@ -1,0 +1,14 @@
+module body session is
+    record SessionHandle : Linear is
+        userId: Nat64;
+    end;
+
+    function CreateSession(userId: Nat64): SessionHandle is
+        return SessionHandle(userId => userId);
+    end;
+
+    function EndSession(session: SessionHandle): Unit is
+        let { userId as uid: Nat64 } := session;
+        return nil;
+    end;
+end module body.

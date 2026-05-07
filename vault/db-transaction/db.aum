@@ -1,0 +1,19 @@
+module body db is
+    record Transaction : Linear is
+        id: Nat64;
+    end;
+
+    function BeginTransaction(): Transaction is
+        return Transaction(id => 1);
+    end;
+
+    function Commit(tx: Transaction): Unit is
+        let { id: Nat64 } := tx;
+        return nil;
+    end;
+
+    function Rollback(tx: Transaction): Unit is
+        let { id: Nat64 } := tx;
+        return nil;
+    end;
+end module body.

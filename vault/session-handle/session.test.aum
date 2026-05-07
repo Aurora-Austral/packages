@@ -1,0 +1,21 @@
+import session (
+    SessionHandle,
+    CreateSession,
+    EndSession
+);
+
+module body session_test is
+    function TestSessionLifecycle(): Unit is
+        let sess: SessionHandle := CreateSession(userId => 123);
+        printLn("Session created for user 123.");
+        EndSession(sess);
+        printLn("Session ended.");
+        return nil;
+    end;
+
+    generic function main(root: RootCapability): ExitCode is
+        TestSessionLifecycle();
+        surrenderRoot(root);
+        return ExitSuccess();
+    end;
+end module body.

@@ -1,0 +1,21 @@
+module body dpop is
+    -- A estrutura interna do DPoPToken.
+    record DPoPToken : Linear is
+        content: Nat64;
+    end;
+
+    function CreateToken(content: Nat64): DPoPToken is
+        return DPoPToken(content => content);
+    end;
+
+    generic [R: Region]
+    function GetContent(token: &[DPoPToken, R]): Nat64 is
+        return token->content;
+    end;
+
+    function DestroyToken(token: DPoPToken): Unit is
+        -- Desestruturamos o registro linear para consumir seus campos.
+        let { content: Nat64 } := token;
+        return nil;
+    end;
+end module body.

@@ -1,0 +1,15 @@
+module dpop is
+    -- O DPoPToken é um tipo Linear, garantindo que ele seja consumido exatamente uma vez.
+    -- Isso previne vazamentos de tokens e uso indevido no ciclo de vida da aplicação.
+    type DPoPToken : Linear;
+
+    -- Cria um novo token DPoP a partir de um conteúdo string.
+    function CreateToken(content: Nat64): DPoPToken;
+
+    -- Retorna o conteúdo do token. Como usamos um empréstimo (&), o token não é consumido.
+    generic [R: Region]
+    function GetContent(token: &[DPoPToken, R]): Nat64;
+
+    -- Consome o token, destruindo-o com segurança.
+    function DestroyToken(token: DPoPToken): Unit;
+end module.

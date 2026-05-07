@@ -1,0 +1,6 @@
+module event is
+    type LinearEvent : Linear;
+
+    function ReceiveEvent(payload: Nat64): LinearEvent;
+    function Acknowledge(event: LinearEvent): Unit;
+end module.

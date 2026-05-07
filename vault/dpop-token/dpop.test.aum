@@ -1,0 +1,22 @@
+import dpop (
+    DPoPToken,
+    CreateToken,
+    GetContent,
+    DestroyToken
+);
+
+module body dpop_test is
+    function TestDPoPLifecycle(): Unit is
+        let token: DPoPToken := CreateToken(content => 123456);
+        let content: Nat64 := GetContent(&token);
+        printLn(content);
+        DestroyToken(token);
+        return nil;
+    end;
+
+    generic function main(root: RootCapability): ExitCode is
+        TestDPoPLifecycle();
+        surrenderRoot(root);
+        return ExitSuccess();
+    end;
+end module body.

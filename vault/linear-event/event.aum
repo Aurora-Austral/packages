@@ -1,0 +1,14 @@
+module body event is
+    record LinearEvent : Linear is
+        payload: Nat64;
+    end;
+
+    function ReceiveEvent(payload: Nat64): LinearEvent is
+        return LinearEvent(payload => payload);
+    end;
+
+    function Acknowledge(event: LinearEvent): Unit is
+        let { payload as p: Nat64 } := event;
+        return nil;
+    end;
+end module body.

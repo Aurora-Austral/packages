@@ -1,0 +1,6 @@
+module session is
+    type SessionHandle : Linear;
+
+    function CreateSession(userId: Nat64): SessionHandle;
+    function EndSession(session: SessionHandle): Unit;
+end module.

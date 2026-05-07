@@ -1,0 +1,29 @@
+import db (
+    Transaction,
+    BeginTransaction,
+    Commit,
+    Rollback
+);
+
+module body db_test is
+    function TestTransactionCommit(): Unit is
+        let tx: Transaction := BeginTransaction();
+        printLn("Testing Commit...");
+        Commit(tx);
+        return nil;
+    end;
+
+    function TestTransactionRollback(): Unit is
+        let tx: Transaction := BeginTransaction();
+        printLn("Testing Rollback...");
+        Rollback(tx);
+        return nil;
+    end;
+
+    generic function main(root: RootCapability): ExitCode is
+        TestTransactionCommit();
+        TestTransactionRollback();
+        surrenderRoot(root);
+        return ExitSuccess();
+    end;
+end module body.

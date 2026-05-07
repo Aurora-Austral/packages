@@ -1,0 +1,33 @@
+import balance (
+    Balance,
+    BalancePair,
+    InitialBalance,
+    Split,
+    ConsumePair,
+    Merge,
+    Spend
+);
+
+module body balance_test is
+    function TestBalanceOperations(): Unit is
+        let b: Balance := InitialBalance(100);
+        printLn("Initial balance: 100");
+        
+        let pair: BalancePair := Split(b);
+        printLn("Split into two balances");
+        
+        let { first as b1: Balance, second as b2: Balance } := pair;
+        let b3: Balance := Merge(b1, b2);
+        printLn("Merged back");
+        
+        Spend(b3);
+        printLn("Spent.");
+        return nil;
+    end;
+
+    generic function main(root: RootCapability): ExitCode is
+        TestBalanceOperations();
+        surrenderRoot(root);
+        return ExitSuccess();
+    end;
+end module body.

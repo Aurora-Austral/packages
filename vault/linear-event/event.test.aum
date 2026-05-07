@@ -1,0 +1,21 @@
+import event (
+    LinearEvent,
+    ReceiveEvent,
+    Acknowledge
+);
+
+module body event_test is
+    function TestEventLifecycle(): Unit is
+        let ev: LinearEvent := ReceiveEvent(payload => 987654);
+        printLn("Event received.");
+        Acknowledge(ev);
+        printLn("Event acknowledged.");
+        return nil;
+    end;
+
+    generic function main(root: RootCapability): ExitCode is
+        TestEventLifecycle();
+        surrenderRoot(root);
+        return ExitSuccess();
+    end;
+end module body.
