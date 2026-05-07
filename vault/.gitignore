@@ -1,4 +1,10 @@
 **/*.html
+<<<<<<< HEAD
 *_test
 test_minimal
 *.exe
+=======
+**/*_test
+**/test_minimal
+**/*.exe
+>>>>>>> 18db231 (logo)
