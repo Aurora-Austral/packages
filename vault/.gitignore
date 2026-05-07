@@ -1,0 +1,4 @@
+**/*.html
+*_test
+test_minimal
+*.exe

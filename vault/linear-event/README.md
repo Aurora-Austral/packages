@@ -1,14 +1,26 @@
-# Linear Event (Linear)
+# Linear Event
 
-This package ensures that critical events are processed and acknowledged (ACK) exactly once.
+## Capability
+- `LinearEvent`: Linear (Ensures that every received event is explicitly processed or acknowledged).
 
-## Linearity
-Useful in event-driven architectures to ensure no message is lost or left unanswered by the system.
+## Purpose
+Event system where processing is guaranteed by the compiler. Ideal for messaging systems where "At-Least-Once" or "Exactly-Once" is critical at the code level.
 
-## Usage
+## Usage Example
 ```austral
-import Austral.Vault.Event (LinearEvent, ReceiveEvent, Acknowledge);
+import event (
+    LinearEvent,
+    ReceiveEvent,
+    Acknowledge
+);
 
-let ev: LinearEvent := ReceiveEvent("event-payload");
+-- Example
+let ev: LinearEvent := ReceiveEvent(12345);
 Acknowledge(ev);
+```
+
+## Tests
+To run the tests:
+```bash
+make test
 ```

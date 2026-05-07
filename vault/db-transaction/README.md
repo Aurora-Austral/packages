@@ -1,16 +1,28 @@
-# DB Transaction (Linear)
+# DB Transaction
 
-This package ensures that database transactions are handled atomically and safely through linear types.
+## Capability
+- `Transaction`: Linear (Ensures that every open transaction is explicitly finalized via Commit or Rollback).
 
-## Linearity
-The compiler forces the developer to call `Commit` or `Rollback`. If the transaction is ignored, the code will not compile, avoiding hanging connections or inconsistent states.
+## Purpose
+Secure database transaction management. Through linear typing, the compiler prevents a transaction from being left open, forcing the developer to handle the success or failure of the process.
 
-## Usage
+## Usage Example
 ```austral
-import Austral.Vault.DB (Transaction, BeginTransaction, Commit, Rollback);
+import db (
+    Transaction,
+    BeginTransaction,
+    Commit,
+    Rollback
+);
 
+-- Example
 let tx: Transaction := BeginTransaction();
--- Success path
+-- ... logic
 Commit(tx);
--- OR Rollback(tx);
+```
+
+## Tests
+To run the tests:
+```bash
+make test
 ```

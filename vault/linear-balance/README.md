@@ -1,16 +1,31 @@
-# Linear Balance (Linear)
+# Linear Balance
 
-This package treats monetary values as linear types, ensuring money is never duplicated (double spending) or lost.
+## Capability
+- `Balance`: Linear (Prevents accidental creation or destruction of financial values).
+- `BalancePair`: Linear (Result of the Split operation, must also be consumed).
 
-## Linearity
-To move value, you must consume the original balance and create new balances. This reflects value conservation at the type system level.
+## Purpose
+Implementation of financial balances with conservation guarantee. In Austral, you cannot simply delete a balance; it must be spent, merged, or split, ensuring the sum of the values remains intact.
 
-## Usage
+## Usage Example
 ```austral
-import Austral.Vault.Finance (Balance, BalancePair, InitialBalance, Split, Merge, Spend);
+import balance (
+    Balance,
+    InitialBalance,
+    Split,
+    Merge,
+    Spend
+);
 
+-- Example
 let b: Balance := InitialBalance(100);
 let pair: BalancePair := Split(b);
--- Use helper to consume
+-- ...
 ConsumePair(pair);
+```
+
+## Tests
+To run the tests:
+```bash
+make test
 ```

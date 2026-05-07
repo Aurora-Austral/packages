@@ -1,47 +1,28 @@
-# DPoP Token (Austral)
+# DPoP Token
 
-This package provides a robust and secure implementation for managing **DPoP (Demonstrating Proof-of-Possession)** tokens using the **Austral** language.
+## Capability
+- `DPoPToken`: Linear (Ensures single-use consumption and prevents token leakage).
 
-## Why Austral and Linear Types?
+## Purpose
+This package implements the DPoP (Demonstrating Proof-of-Possession) pattern for access tokens. It ensures that the token is consumed exactly once, utilizing Austral's linear type system to prevent replay attacks and misuse.
 
-The core feature of this package is the use of **Linear Types (`Linear`)**. In Austral, a linear type ensures that a resource is used **exactly once**.
-
-### Security Benefits:
-
-1.  **Guaranteed Destruction:** Since `DPoPToken` is linear, the compiler forces the developer to consume it (via `DestroyToken`). This prevents "orphaned" tokens in memory.
-2.  **Leak Prevention:** A linear token cannot be silently discarded or copied. If you try to ignore a created token, the code will not compile.
-3.  **Possession Traceability:** Linearity reflects the nature of DPoP, where token possession and usage must be strictly controlled.
-
-## Package Structure
-
--   `dpop.aui`: Module interface, defining the linear type and allowed operations.
--   `dpop.aum`: Implementation of operations and internal token structure.
--   `dpop.test.aum`: Test suite demonstrating the lifecycle (Creation -> Usage -> Destruction).
--   `Makefile`: Commands for compilation and running tests.
-
-## Usage
-
+## Usage Example
 ```austral
-import Austral.Vault.DPoP (DPoPToken, CreateToken, GetContent, DestroyToken);
+import dpop (
+    DPoPToken,
+    CreateToken,
+    GetContent,
+    DestroyToken
+);
 
--- In your code:
-let token: DPoPToken := CreateToken("my-dpop-jwt");
-
--- Accessing content without consuming the token (using borrowing)
-let c: String := GetContent(&token);
-
--- Ending the lifecycle (Mandatory because it's Linear)
+-- Example
+let token: DPoPToken := CreateToken(123);
+let val: Nat64 := GetContent(&token);
 DestroyToken(token);
 ```
 
-## Compilation
-
-To compile the package:
-```bash
-make
-```
-
-To run tests:
+## Tests
+To run the tests:
 ```bash
 make test
 ```

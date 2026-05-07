@@ -1,14 +1,26 @@
-# Session Handle (Linear)
+# Session Handle
 
-This package manages user session state securely, ensuring the session lifecycle is properly closed.
+## Capability
+- `SessionHandle`: Linear (Ensures that every open session is explicitly closed).
 
-## Linearity
-Forces the developer to explicitly manage the session end, avoiding hanging sessions on the server or inconsistent states on the client.
+## Purpose
+User session control with guaranteed closure. Prevents session leaks and state inconsistencies in the backend by requiring each session handle to be consumed by the termination function.
 
-## Usage
+## Usage Example
 ```austral
-import Austral.Vault.Session (SessionHandle, CreateSession, EndSession);
+import session (
+    SessionHandle,
+    CreateSession,
+    EndSession
+);
 
-let sess: SessionHandle := CreateSession("user-id");
+-- Example
+let sess: SessionHandle := CreateSession(42);
 EndSession(sess);
+```
+
+## Tests
+To run the tests:
+```bash
+make test
 ```

@@ -1,15 +1,28 @@
-# Secret Handle (Linear)
+# Secret Handle
 
-This package manages sensitive secrets using linear types to ensure they are wiped from memory after use.
+## Capability
+- `SecretHandle`: Linear (Ensures that sensitive data is wiped from memory after use).
 
-## Linearity
-Linearity ensures that every accessed secret is mandatory "wiped" (`WipeSecret`), preventing sensitive information from remaining in memory longer than necessary.
+## Purpose
+Secret management with forced cleanup. The compiler guarantees that the developer calls the cleanup function (`WipeSecret`), preventing secrets from lingering in memory longer than necessary.
 
-## Usage
+## Usage Example
 ```austral
-import Austral.Vault.Secret (SecretHandle, AccessSecret, RevealSecret, WipeSecret);
+import secret (
+    SecretHandle,
+    AccessSecret,
+    RevealSecret,
+    WipeSecret
+);
 
-let s: SecretHandle := AccessSecret("api-key");
-let val: String := RevealSecret(&s);
-WipeSecret(s);
+-- Example
+let handle: SecretHandle := AccessSecret(101);
+let secret: Nat64 := RevealSecret(&handle);
+WipeSecret(handle);
+```
+
+## Tests
+To run the tests:
+```bash
+make test
 ```
