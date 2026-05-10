@@ -1,0 +1,4819 @@
+
+/*
+    Part of the Austral project, under the Apache License v2.0 with LLVM Exceptions.
+    See LICENSE file for details.
+
+    SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+*/
+#include <stdint.h>
+#include <stddef.h>
+#include <stdarg.h>
+
+/*
+ * Austral types
+ */
+
+typedef uint8_t   au_unit_t;
+typedef uint8_t   au_bool_t;
+typedef uint8_t   au_nat8_t;
+typedef int8_t    au_int8_t;
+typedef uint16_t  au_nat16_t;
+typedef int16_t   au_int16_t;
+typedef uint32_t  au_nat32_t;
+typedef int32_t   au_int32_t;
+typedef uint64_t  au_nat64_t;
+typedef int64_t   au_int64_t;
+typedef size_t    au_index_t;
+typedef void*     au_fnptr_t;
+typedef uint8_t   au_region_t;
+
+#define nil   0
+#define false 0
+#define true  1
+
+/*
+ * A little hack
+ */
+
+#define AU_STORE(ptr, val) (*(ptr) = (val), nil)
+
+/*
+ * Pervasive
+ */
+
+typedef struct {
+  void* data;
+  size_t size;
+} au_span_t;
+
+au_span_t au_make_span(void* data, size_t size) {
+  return (au_span_t){ .data = data, .size = size };
+}
+
+au_span_t au_make_span_from_string(const char* data, size_t size) {
+  return (au_span_t){ .data = (void*) data, .size = size };
+}
+
+void* au_stdout() {
+#if defined(__APPLE__)
+  extern void* __stdoutp;
+  return __stdoutp;
+#else
+  extern void* stdout;
+  return stdout;
+#endif
+}
+
+void* au_stderr() {
+#if defined(__APPLE__)
+  extern void* __stderrp;
+  return __stderrp;
+#elif defined(__FreeBSD__)
+  extern void* __stderrp;
+  return __stderrp;
+#elif defined(__OpenBSD__)
+  extern void *__sF;
+  return &__sF[2];
+#else
+  extern void* stderr;
+  return stderr;
+#endif
+}
+
+extern void* au_stdin() {
+#if defined(__APPLE__)
+  extern void* __stdinp;
+  return __stdinp;
+#else
+  extern void* stdin;
+  return stdin;
+#endif
+}
+
+au_unit_t au_abort_internal(const char* message) {
+  extern int fprintf(void* stream, const char* format, ...);
+  extern int fflush(void* stream);
+  extern void _Exit(int status);
+
+  void* stderr = au_stderr();
+
+  fprintf(stderr, "%s\n", message);
+  fflush(stderr);
+  _Exit(-1);
+
+  return nil;
+}
+
+au_unit_t au_abort(au_span_t message) {
+  extern int fprintf(void* stream, const char* format, ...);
+  extern int fflush(void* stream);
+  extern void _Exit(int status);
+
+  void* stderr = au_stderr();
+
+  fprintf(stderr, "%s\n", (char*) message.data);
+  fflush(stderr);
+  _Exit(-1);
+  return nil;
+}
+
+au_unit_t au_printf(const char* format, ...) {
+  extern int vprintf(const char* format, va_list arg);
+
+  va_list args;
+  va_start(args, format);
+  vprintf(format, args);
+  va_end(args);
+  return nil;
+}
+
+void* au_array_index(au_span_t* array, size_t index, size_t elem_size) {
+  if (index >= array->size) {
+    au_abort_internal("Array index out of bounds.");
+  }
+
+  au_index_t offset = 0;
+  if (__builtin_mul_overflow(index, elem_size, &offset)) {
+    au_abort_internal("Multiplication overflow in array indexing operation.");
+  }
+
+  char* data = (char*) array->data;
+  char* ptr = data + offset;
+  return (void*)(ptr);
+}
+
+/*
+ * Memory functions
+ */
+
+void* au_calloc(size_t size, size_t count) {
+  extern void* calloc(size_t count, size_t size);
+
+  return calloc(size, count);
+}
+
+void* au_realloc(void* ptr, size_t count) {
+  extern void* realloc(void *ptr, size_t size);
+
+  return realloc(ptr, count);
+}
+
+void* au_memmove(void* destination, void* source, size_t count) {
+  extern void* memmove(void* destination, void* source, size_t count);
+
+  return memmove(destination, source, count);
+}
+
+void* au_memcpy(void* destination, void* source, size_t count) {
+  extern void* memcpy(void* destination, void* source, size_t count);
+
+  return memcpy(destination, source, count);
+}
+
+au_unit_t au_free(void* ptr) {
+  extern void free(void* ptr);
+
+  free(ptr);
+  return nil;
+};
+
+/*
+ * CLI functions
+ */
+
+static int _au_argc = -1;
+
+static char** _au_argv = NULL;
+
+void au_store_cli_args(int argc, char** argv) {
+  // Sanity checks.
+  if (argc < 0) {
+    au_abort_internal("Entrypoint error: argc is negative.");
+  }
+  if (argv == NULL) {
+    au_abort_internal("Entrypoint error: argv is NULL.");
+  }
+  // Store values.
+  _au_argc = argc;
+  _au_argv = argv;
+}
+
+size_t au_get_argc() {
+  // Sanity check.
+  if (_au_argc == -1) {
+    au_abort_internal("Prelude error: argc was not set.");
+  }
+  // Correctness argument: if _au_argc is non-negative, being an `int`, it
+  // should fit inside `size_t`.
+  size_t argc = (size_t)(_au_argc);
+  return argc;
+}
+
+size_t _au_bounded_strlen(char* string, size_t bound) {
+  size_t size = 0;
+  for(size_t idx = 0; idx <= bound; idx++) {
+    if (string[idx] == '\0') {
+      return size;
+    }
+    size++;
+  }
+  au_abort_internal("Command line argument exceeds maximum length of 10 kibibytes.");
+}
+
+/* One kibibyte in bytes. */
+#define AU_KIBIBYTE 1024
+/* The maximum size of each CLI arg. */
+#define AU_MAX_ARG_SIZE (10*AU_KIBIBYTE)
+
+au_span_t au_get_nth_arg(size_t n) {
+  // Sanity check.
+  if (_au_argv == NULL) {
+    au_abort_internal("Prelude error: argv was not set.");
+  }
+  size_t argc = au_get_argc();
+  // Check array bounds.
+  if (n >= argc) {
+    au_abort_internal("Command line argument access out of bounds.");
+  }
+  // Retrieve the nth argument.
+  char* arg = _au_argv[n];
+  // Check non-null.
+  if (arg == NULL) {
+    au_abort_internal("Prelude error: command-line argument is NULL.");
+  }
+  // Measure the length.
+  size_t size = _au_bounded_strlen(arg, AU_MAX_ARG_SIZE);
+  // Otherwise, return it.
+  au_span_t arg_array = ((au_span_t){ .data = (void*)arg, .size = size });
+  return arg_array;
+}
+
+
+/* --- BEGIN translation unit for module 'Austral.Pervasive' --- */
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width8))]
+*/
+typedef enum {
+    mono_2_tag_Some, mono_2_tag_None
+} mono_2_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width16))]
+*/
+typedef enum {
+    mono_3_tag_Some, mono_3_tag_None
+} mono_3_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width32))]
+*/
+typedef enum {
+    mono_4_tag_Some, mono_4_tag_None
+} mono_4_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width64))]
+*/
+typedef enum {
+    mono_5_tag_Some, mono_5_tag_None
+} mono_5_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Signed, Type.Width8))]
+*/
+typedef enum {
+    mono_6_tag_Some, mono_6_tag_None
+} mono_6_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Signed, Type.Width16))]
+*/
+typedef enum {
+    mono_7_tag_Some, mono_7_tag_None
+} mono_7_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Signed, Type.Width32))]
+*/
+typedef enum {
+    mono_8_tag_Some, mono_8_tag_None
+} mono_8_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Signed, Type.Width64))]
+*/
+typedef enum {
+    mono_9_tag_Some, mono_9_tag_None
+} mono_9_tag;
+
+/*
+  Union monomorph tag enum: Option[(MonoType.MonoInteger (Type.Unsigned, Type.WidthIndex))]
+*/
+typedef enum {
+    mono_10_tag_Some, mono_10_tag_None
+} mono_10_tag;
+
+/*
+  Union monomorph tag enum: Option[MonoType.MonoSingleFloat]
+*/
+typedef enum {
+    mono_11_tag_Some, mono_11_tag_None
+} mono_11_tag;
+
+/*
+  Union monomorph tag enum: Option[MonoType.MonoDoubleFloat]
+*/
+typedef enum {
+    mono_12_tag_Some, mono_12_tag_None
+} mono_12_tag;
+
+/*
+  Record monomorph: RootCapability[]
+*/
+struct mono_1;
+typedef struct mono_1 mono_1;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width8))]
+*/
+struct mono_2;
+typedef struct mono_2 mono_2;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width16))]
+*/
+struct mono_3;
+typedef struct mono_3 mono_3;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width32))]
+*/
+struct mono_4;
+typedef struct mono_4 mono_4;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width64))]
+*/
+struct mono_5;
+typedef struct mono_5 mono_5;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width8))]
+*/
+struct mono_6;
+typedef struct mono_6 mono_6;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width16))]
+*/
+struct mono_7;
+typedef struct mono_7 mono_7;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width32))]
+*/
+struct mono_8;
+typedef struct mono_8 mono_8;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width64))]
+*/
+struct mono_9;
+typedef struct mono_9 mono_9;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.WidthIndex))]
+*/
+struct mono_10;
+typedef struct mono_10 mono_10;
+
+/*
+  Union monomorph: Option[MonoType.MonoSingleFloat]
+*/
+struct mono_11;
+typedef struct mono_11 mono_11;
+
+/*
+  Union monomorph: Option[MonoType.MonoDoubleFloat]
+*/
+struct mono_12;
+typedef struct mono_12 mono_12;
+
+/*
+  Record monomorph: RootCapability[]
+*/
+typedef struct mono_1 {au_unit_t value;} mono_1;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width8))]
+*/
+typedef struct mono_2 {mono_2_tag tag;union { struct  {au_nat8_t value;} Some;struct  {} None;} data;} mono_2;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width16))]
+*/
+typedef struct mono_3 {mono_3_tag tag;union { struct  {au_nat16_t value;} Some;struct  {} None;} data;} mono_3;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width32))]
+*/
+typedef struct mono_4 {mono_4_tag tag;union { struct  {au_nat32_t value;} Some;struct  {} None;} data;} mono_4;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.Width64))]
+*/
+typedef struct mono_5 {mono_5_tag tag;union { struct  {au_nat64_t value;} Some;struct  {} None;} data;} mono_5;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width8))]
+*/
+typedef struct mono_6 {mono_6_tag tag;union { struct  {au_int8_t value;} Some;struct  {} None;} data;} mono_6;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width16))]
+*/
+typedef struct mono_7 {mono_7_tag tag;union { struct  {au_int16_t value;} Some;struct  {} None;} data;} mono_7;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width32))]
+*/
+typedef struct mono_8 {mono_8_tag tag;union { struct  {au_int32_t value;} Some;struct  {} None;} data;} mono_8;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Signed, Type.Width64))]
+*/
+typedef struct mono_9 {mono_9_tag tag;union { struct  {au_int64_t value;} Some;struct  {} None;} data;} mono_9;
+
+/*
+  Union monomorph: Option[(MonoType.MonoInteger (Type.Unsigned, Type.WidthIndex))]
+*/
+typedef struct mono_10 {mono_10_tag tag;union { struct  {au_index_t value;} Some;struct  {} None;} data;} mono_10;
+
+/*
+  Union monomorph: Option[MonoType.MonoSingleFloat]
+*/
+typedef struct mono_11 {mono_11_tag tag;union { struct  {float value;} Some;struct  {} None;} data;} mono_11;
+
+/*
+  Union monomorph: Option[MonoType.MonoDoubleFloat]
+*/
+typedef struct mono_12 {mono_12_tag tag;union { struct  {double value;} Some;struct  {} None;} data;} mono_12;
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_nat8 ((au_nat8_t)(UINT8_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_nat16 ((au_nat16_t)(UINT16_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_nat32 ((au_nat32_t)(UINT32_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_nat64 ((au_nat64_t)(UINT64_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_int8 ((au_int8_t)(INT8_MIN))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_int8 ((au_int8_t)(INT8_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_int16 ((au_int16_t)(INT16_MIN))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_int16 ((au_int16_t)(INT16_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_int32 ((au_int32_t)(INT32_MIN))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_int32 ((au_int32_t)(INT32_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_int64 ((au_int64_t)(INT64_MIN))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_int64 ((au_int64_t)(INT64_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_index 0
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_index ((au_index_t)(SIZE_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_bytesize 0
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____maximum_bytesize ((size_t)(SIZE_MAX))
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_nat8 0
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_nat16 0
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_nat32 0
+
+/*
+  Constant
+*/
+#define Austral__Pervasive____minimum_nat64 0
+
+/*
+  Function forward declaratioon
+*/
+au_unit_t decl_9(au_span_t message);
+
+/*
+  Function forward declaratioon
+*/
+au_unit_t decl_11(mono_1 cap);
+
+/*
+  Function forward declaratioon
+*/
+au_index_t decl_12();
+
+/*
+  Function forward declaratioon
+*/
+au_span_t decl_13(au_index_t n);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_1(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_2(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_3(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_4(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_5(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_6(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_7(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_8(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_9(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_10(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_11(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_12(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_13(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_14(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_15(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_16(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_17(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_18(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_19(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_20(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_21(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_22(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_23(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_24(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_25(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_26(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_27(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_28(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_29(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_30(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_31(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_32(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_33(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_34(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_35(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_36(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_37(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_38(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_39(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_40(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+double meth_41(double lhs, double rhs);
+
+/*
+  Method forward declaration
+*/
+double meth_42(double lhs, double rhs);
+
+/*
+  Method forward declaration
+*/
+double meth_43(double lhs, double rhs);
+
+/*
+  Method forward declaration
+*/
+double meth_44(double lhs, double rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_45(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_46(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_47(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_48(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_49(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_50(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_51(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_52(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_53(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_54(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_55(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_56(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_57(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_58(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_59(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_60(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_61(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_62(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_63(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_64(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_65(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_66(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_67(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_68(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_69(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_70(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_71(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_72(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_73(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_74(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_75(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_76(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_77(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_78(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_79(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_80(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_81(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_82(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_83(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_84(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_85(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_86(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_87(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_88(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_89(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_90(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_91(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_92(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_93(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_94(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_95(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_96(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_97(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_98(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_99(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_100(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_101(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_102(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_103(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_104(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_105(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_106(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_107(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_108(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_109(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_110(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_111(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_112(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_113(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_114(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_115(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_116(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_117(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_118(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_119(au_index_t lhs, au_index_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_120(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+size_t meth_121(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_122(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_123(size_t lhs, size_t rhs);
+
+/*
+  Method forward declaration
+*/
+size_t meth_124(size_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_125(au_unit_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_126(au_bool_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_127(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_128(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_129(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_130(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_131(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_132(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_133(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_134(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_135(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_136(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_137(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_138(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_139(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_140(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_141(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_142(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_143(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_144(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_145(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_146(size_t value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_147(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_148(float value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_149(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_150(double value);
+
+/*
+  Method forward declaration
+*/
+au_unit_t meth_151(au_span_t array);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_154(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_155(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_156(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_157(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_158(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_159(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_160(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_161(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_162(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_163(float value);
+
+/*
+  Method forward declaration
+*/
+mono_2 meth_164(double value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_165(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_166(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_167(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_168(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_169(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_170(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_171(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_172(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_173(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_174(float value);
+
+/*
+  Method forward declaration
+*/
+mono_3 meth_175(double value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_176(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_177(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_178(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_179(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_180(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_181(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_182(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_183(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_184(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_185(float value);
+
+/*
+  Method forward declaration
+*/
+mono_4 meth_186(double value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_187(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_188(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_189(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_190(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_191(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_192(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_193(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_194(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_195(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_196(float value);
+
+/*
+  Method forward declaration
+*/
+mono_5 meth_197(double value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_198(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_199(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_200(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_201(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_202(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_203(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_204(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_205(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_206(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_207(float value);
+
+/*
+  Method forward declaration
+*/
+mono_6 meth_208(double value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_209(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_210(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_211(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_212(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_213(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_214(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_215(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_216(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_217(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_218(float value);
+
+/*
+  Method forward declaration
+*/
+mono_7 meth_219(double value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_220(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_221(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_222(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_223(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_224(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_225(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_226(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_227(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_228(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_229(float value);
+
+/*
+  Method forward declaration
+*/
+mono_8 meth_230(double value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_231(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_232(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_233(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_234(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_235(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_236(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_237(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_238(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_239(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_240(float value);
+
+/*
+  Method forward declaration
+*/
+mono_9 meth_241(double value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_242(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_243(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_244(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_245(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_246(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_247(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_248(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_249(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_250(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_251(float value);
+
+/*
+  Method forward declaration
+*/
+mono_10 meth_252(double value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_253(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_254(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_255(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_256(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_257(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_258(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_259(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_260(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_261(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_262(float value);
+
+/*
+  Method forward declaration
+*/
+mono_11 meth_263(double value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_264(au_nat8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_265(au_nat16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_266(au_nat32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_267(au_nat64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_268(au_int8_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_269(au_int16_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_270(au_int32_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_271(au_int64_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_272(au_index_t value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_273(float value);
+
+/*
+  Method forward declaration
+*/
+mono_12 meth_274(double value);
+
+/*
+  Method forward declaration
+*/
+au_nat8_t meth_275(au_nat8_t lhs, au_nat8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat16_t meth_276(au_nat16_t lhs, au_nat16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat32_t meth_277(au_nat32_t lhs, au_nat32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_nat64_t meth_278(au_nat64_t lhs, au_nat64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int8_t meth_279(au_int8_t lhs, au_int8_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int16_t meth_280(au_int16_t lhs, au_int16_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int32_t meth_281(au_int32_t lhs, au_int32_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_int64_t meth_282(au_int64_t lhs, au_int64_t rhs);
+
+/*
+  Method forward declaration
+*/
+au_index_t meth_283(au_index_t lhs, au_index_t rhs);
+
+/*
+  Function
+*/
+au_unit_t decl_9(au_span_t message) {
+    return ((au_unit_t)(au_abort(message)));
+}
+
+/*
+  Function
+*/
+au_unit_t decl_11(mono_1 cap) {
+    mono_1 tmp0 = cap;
+    au_unit_t value = (tmp0).value;
+    return false;
+}
+
+/*
+  Function
+*/
+au_index_t decl_12() {
+    return ((au_index_t)(au_get_argc()));
+}
+
+/*
+  Function
+*/
+au_span_t decl_13(au_index_t n) {
+    return ((au_span_t)(au_get_nth_arg(n)));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_1(au_nat8_t lhs, au_nat8_t rhs) {
+    au_nat8_t result;
+    result = ((au_nat8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t0 = did_overflow;
+    if (_t0) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Nat8)", 30));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_2(au_nat8_t lhs, au_nat8_t rhs) {
+    au_nat8_t result;
+    result = ((au_nat8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t1 = did_overflow;
+    if (_t1) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Nat8)", 35));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_3(au_nat8_t lhs, au_nat8_t rhs) {
+    au_nat8_t result;
+    result = ((au_nat8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t2 = did_overflow;
+    if (_t2) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Nat8)", 35));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_4(au_nat8_t lhs, au_nat8_t rhs) {
+    au_bool_t _t3 = (rhs == 0);
+    if (_t3) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Nat8)", 41));
+    } else {
+    }
+    return ((au_nat8_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_5(au_int8_t lhs, au_int8_t rhs) {
+    au_int8_t result;
+    result = ((au_int8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t4 = did_overflow;
+    if (_t4) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Int8)", 30));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int8_t meth_6(au_int8_t lhs, au_int8_t rhs) {
+    au_int8_t result;
+    result = ((au_int8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t5 = did_overflow;
+    if (_t5) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Int8)", 35));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int8_t meth_7(au_int8_t lhs, au_int8_t rhs) {
+    au_int8_t result;
+    result = ((au_int8_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t6 = did_overflow;
+    if (_t6) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Int8)", 35));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int8_t meth_8(au_int8_t lhs, au_int8_t rhs) {
+    au_bool_t _t8 = (rhs == 0);
+    if (_t8) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Int8)", 41));
+    } else {
+    }
+    au_bool_t _t7 = ((lhs == Austral__Pervasive____minimum_int8) && (rhs == -1));
+    if (_t7) {
+        decl_9(au_make_span_from_string("Overflow in trappingDivide (Int8)", 33));
+    } else {
+    }
+    return ((au_int8_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_9(au_nat16_t lhs, au_nat16_t rhs) {
+    au_nat16_t result;
+    result = ((au_nat16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t9 = did_overflow;
+    if (_t9) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Nat16)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_10(au_nat16_t lhs, au_nat16_t rhs) {
+    au_nat16_t result;
+    result = ((au_nat16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t10 = did_overflow;
+    if (_t10) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Nat16)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_11(au_nat16_t lhs, au_nat16_t rhs) {
+    au_nat16_t result;
+    result = ((au_nat16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t11 = did_overflow;
+    if (_t11) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Nat16)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_12(au_nat16_t lhs, au_nat16_t rhs) {
+    au_bool_t _t12 = (rhs == 0);
+    if (_t12) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Nat16)", 42));
+    } else {
+    }
+    return ((au_nat16_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_13(au_int16_t lhs, au_int16_t rhs) {
+    au_int16_t result;
+    result = ((au_int16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t13 = did_overflow;
+    if (_t13) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Int16)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int16_t meth_14(au_int16_t lhs, au_int16_t rhs) {
+    au_int16_t result;
+    result = ((au_int16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t14 = did_overflow;
+    if (_t14) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Int16)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int16_t meth_15(au_int16_t lhs, au_int16_t rhs) {
+    au_int16_t result;
+    result = ((au_int16_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t15 = did_overflow;
+    if (_t15) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Int16)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int16_t meth_16(au_int16_t lhs, au_int16_t rhs) {
+    au_bool_t _t17 = (rhs == 0);
+    if (_t17) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Int16)", 42));
+    } else {
+    }
+    au_bool_t _t16 = ((lhs == Austral__Pervasive____minimum_int16) && (rhs == -1));
+    if (_t16) {
+        decl_9(au_make_span_from_string("Overflow in trappingDivide (Int16)", 34));
+    } else {
+    }
+    return ((au_int16_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_17(au_nat32_t lhs, au_nat32_t rhs) {
+    au_nat32_t result;
+    result = ((au_nat32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t18 = did_overflow;
+    if (_t18) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Nat32)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_18(au_nat32_t lhs, au_nat32_t rhs) {
+    au_nat32_t result;
+    result = ((au_nat32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t19 = did_overflow;
+    if (_t19) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Nat32)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_19(au_nat32_t lhs, au_nat32_t rhs) {
+    au_nat32_t result;
+    result = ((au_nat32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t20 = did_overflow;
+    if (_t20) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Nat32)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_20(au_nat32_t lhs, au_nat32_t rhs) {
+    au_bool_t _t21 = (rhs == 0);
+    if (_t21) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Nat32)", 42));
+    } else {
+    }
+    return ((au_nat32_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_21(au_int32_t lhs, au_int32_t rhs) {
+    au_int32_t result;
+    result = ((au_int32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t22 = did_overflow;
+    if (_t22) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Int32)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int32_t meth_22(au_int32_t lhs, au_int32_t rhs) {
+    au_int32_t result;
+    result = ((au_int32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t23 = did_overflow;
+    if (_t23) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Int32)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int32_t meth_23(au_int32_t lhs, au_int32_t rhs) {
+    au_int32_t result;
+    result = ((au_int32_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t24 = did_overflow;
+    if (_t24) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Int32)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int32_t meth_24(au_int32_t lhs, au_int32_t rhs) {
+    au_bool_t _t26 = (rhs == 0);
+    if (_t26) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Int32)", 42));
+    } else {
+    }
+    au_bool_t _t25 = ((lhs == Austral__Pervasive____minimum_int32) && (rhs == -1));
+    if (_t25) {
+        decl_9(au_make_span_from_string("Overflow in trappingDivide (Int32)", 34));
+    } else {
+    }
+    return ((au_int32_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_25(au_nat64_t lhs, au_nat64_t rhs) {
+    au_nat64_t result;
+    result = ((au_nat64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t27 = did_overflow;
+    if (_t27) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Nat64)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_26(au_nat64_t lhs, au_nat64_t rhs) {
+    au_nat64_t result;
+    result = ((au_nat64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t28 = did_overflow;
+    if (_t28) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Nat64)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_27(au_nat64_t lhs, au_nat64_t rhs) {
+    au_nat64_t result;
+    result = ((au_nat64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t29 = did_overflow;
+    if (_t29) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Nat64)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_28(au_nat64_t lhs, au_nat64_t rhs) {
+    au_bool_t _t30 = (rhs == 0);
+    if (_t30) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Nat64)", 42));
+    } else {
+    }
+    return ((au_nat64_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_29(au_int64_t lhs, au_int64_t rhs) {
+    au_int64_t result;
+    result = ((au_int64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t31 = did_overflow;
+    if (_t31) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Int64)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int64_t meth_30(au_int64_t lhs, au_int64_t rhs) {
+    au_int64_t result;
+    result = ((au_int64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t32 = did_overflow;
+    if (_t32) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Int64)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int64_t meth_31(au_int64_t lhs, au_int64_t rhs) {
+    au_int64_t result;
+    result = ((au_int64_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t33 = did_overflow;
+    if (_t33) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Int64)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_int64_t meth_32(au_int64_t lhs, au_int64_t rhs) {
+    au_bool_t _t35 = (rhs == 0);
+    if (_t35) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Int64)", 42));
+    } else {
+    }
+    au_bool_t _t34 = ((lhs == Austral__Pervasive____minimum_int64) && (rhs == -1));
+    if (_t34) {
+        decl_9(au_make_span_from_string("Overflow in trappingDivide (Int64)", 34));
+    } else {
+    }
+    return ((au_int64_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_33(au_index_t lhs, au_index_t rhs) {
+    au_index_t result;
+    result = ((au_index_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t36 = did_overflow;
+    if (_t36) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (Index)", 31));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_index_t meth_34(au_index_t lhs, au_index_t rhs) {
+    au_index_t result;
+    result = ((au_index_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t37 = did_overflow;
+    if (_t37) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (Index)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_index_t meth_35(au_index_t lhs, au_index_t rhs) {
+    au_index_t result;
+    result = ((au_index_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t38 = did_overflow;
+    if (_t38) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (Index)", 36));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+au_index_t meth_36(au_index_t lhs, au_index_t rhs) {
+    au_bool_t _t39 = (rhs == 0);
+    if (_t39) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Index)", 42));
+    } else {
+    }
+    return ((au_index_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_37(size_t lhs, size_t rhs) {
+    size_t result;
+    result = ((size_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_add_overflow(lhs, rhs, &result)));
+    au_bool_t _t40 = did_overflow;
+    if (_t40) {
+        decl_9(au_make_span_from_string("Overflow in trappingAdd (ByteSize)", 34));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+size_t meth_38(size_t lhs, size_t rhs) {
+    size_t result;
+    result = ((size_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_sub_overflow(lhs, rhs, &result)));
+    au_bool_t _t41 = did_overflow;
+    if (_t41) {
+        decl_9(au_make_span_from_string("Overflow in trappingSubtract (ByteSize)", 39));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+size_t meth_39(size_t lhs, size_t rhs) {
+    size_t result;
+    result = ((size_t) 0);
+    au_bool_t did_overflow;
+    did_overflow = ((au_bool_t)(__builtin_mul_overflow(lhs, rhs, &result)));
+    au_bool_t _t42 = did_overflow;
+    if (_t42) {
+        decl_9(au_make_span_from_string("Overflow in trappingMultiply (ByteSize)", 39));
+    } else {
+    }
+    return result;
+}
+
+/*
+  Method
+*/
+size_t meth_40(size_t lhs, size_t rhs) {
+    au_bool_t _t43 = (rhs == 0);
+    if (_t43) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (ByteSize)", 45));
+    } else {
+    }
+    return ((size_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+double meth_41(double lhs, double rhs) {
+    return ((double)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+double meth_42(double lhs, double rhs) {
+    return ((double)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+double meth_43(double lhs, double rhs) {
+    return ((double)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+double meth_44(double lhs, double rhs) {
+    au_bool_t _t44 = (rhs == 0.0);
+    if (_t44) {
+        decl_9(au_make_span_from_string("Division by zero in trappingDivide (Float64)", 44));
+    } else {
+    }
+    return ((double)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_45(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_46(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_47(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_48(au_nat8_t lhs, au_nat8_t rhs) {
+    au_bool_t _t45 = (rhs == 0);
+    if (_t45) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Nat8)", 40));
+    } else {
+    }
+    return ((au_nat8_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_49(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_50(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_51(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_52(au_int8_t lhs, au_int8_t rhs) {
+    au_bool_t _t46 = (rhs == 0);
+    if (_t46) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Int8)", 40));
+    } else {
+    }
+    return ((au_int8_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_53(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_54(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_55(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_56(au_nat16_t lhs, au_nat16_t rhs) {
+    au_bool_t _t47 = (rhs == 0);
+    if (_t47) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Nat16)", 41));
+    } else {
+    }
+    return ((au_nat16_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_57(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_58(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_59(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_60(au_int16_t lhs, au_int16_t rhs) {
+    au_bool_t _t48 = (rhs == 0);
+    if (_t48) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Int16)", 41));
+    } else {
+    }
+    return ((au_int16_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_61(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_62(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_63(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_64(au_nat32_t lhs, au_nat32_t rhs) {
+    au_bool_t _t49 = (rhs == 0);
+    if (_t49) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Nat32)", 41));
+    } else {
+    }
+    return ((au_nat32_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_65(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_66(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_67(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_68(au_int32_t lhs, au_int32_t rhs) {
+    au_bool_t _t50 = (rhs == 0);
+    if (_t50) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Int32)", 41));
+    } else {
+    }
+    return ((au_int32_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_69(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_70(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_71(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_72(au_nat64_t lhs, au_nat64_t rhs) {
+    au_bool_t _t51 = (rhs == 0);
+    if (_t51) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Nat64)", 41));
+    } else {
+    }
+    return ((au_nat64_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_73(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_74(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_75(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_76(au_int64_t lhs, au_int64_t rhs) {
+    au_bool_t _t52 = (rhs == 0);
+    if (_t52) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Int64)", 41));
+    } else {
+    }
+    return ((au_int64_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_77(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_78(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_79(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_80(au_index_t lhs, au_index_t rhs) {
+    au_bool_t _t53 = (rhs == 0);
+    if (_t53) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (Index)", 41));
+    } else {
+    }
+    return ((au_index_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_81(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs + rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_82(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs - rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_83(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs * rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_84(size_t lhs, size_t rhs) {
+    au_bool_t _t54 = (rhs == 0);
+    if (_t54) {
+        decl_9(au_make_span_from_string("Division by zero in modularDivide (ByteSize)", 44));
+    } else {
+    }
+    return ((size_t)(lhs / rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_85(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_86(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_87(au_nat8_t lhs, au_nat8_t rhs) {
+    return ((au_nat8_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_88(au_nat8_t value) {
+    return ((au_nat8_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_89(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_90(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_91(au_int8_t lhs, au_int8_t rhs) {
+    return ((au_int8_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_92(au_int8_t value) {
+    return ((au_int8_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_93(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_94(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_95(au_nat16_t lhs, au_nat16_t rhs) {
+    return ((au_nat16_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_96(au_nat16_t value) {
+    return ((au_nat16_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_97(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_98(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_99(au_int16_t lhs, au_int16_t rhs) {
+    return ((au_int16_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_100(au_int16_t value) {
+    return ((au_int16_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_101(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_102(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_103(au_nat32_t lhs, au_nat32_t rhs) {
+    return ((au_nat32_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_104(au_nat32_t value) {
+    return ((au_nat32_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_105(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_106(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_107(au_int32_t lhs, au_int32_t rhs) {
+    return ((au_int32_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_108(au_int32_t value) {
+    return ((au_int32_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_109(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_110(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_111(au_nat64_t lhs, au_nat64_t rhs) {
+    return ((au_nat64_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_112(au_nat64_t value) {
+    return ((au_nat64_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_113(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_114(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_115(au_int64_t lhs, au_int64_t rhs) {
+    return ((au_int64_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_116(au_int64_t value) {
+    return ((au_int64_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_index_t meth_117(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_118(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_119(au_index_t lhs, au_index_t rhs) {
+    return ((au_index_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+au_index_t meth_120(au_index_t value) {
+    return ((au_index_t)(~ value));
+}
+
+/*
+  Method
+*/
+size_t meth_121(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs & rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_122(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs | rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_123(size_t lhs, size_t rhs) {
+    return ((size_t)(lhs ^ rhs));
+}
+
+/*
+  Method
+*/
+size_t meth_124(size_t value) {
+    return ((size_t)(~ value));
+}
+
+/*
+  Method
+*/
+au_unit_t meth_125(au_unit_t value) {
+    return ((au_unit_t)(au_printf("nil")));
+    return value;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_126(au_bool_t value) {
+    au_bool_t _t55 = value;
+    if (_t55) {
+        ((au_unit_t)(au_printf("true")));
+    } else {
+        ((au_unit_t)(au_printf("false")));
+    }
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_127(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_128(au_nat8_t value) {
+    return ((au_unit_t)(au_printf("%i", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_129(au_span_t array) {
+    au_bool_t _t56 = (((au_index_t)(array.size)) > 0);
+    if (_t56) {
+        au_index_t _t57 = ((au_index_t) 0);
+        au_index_t _t58 = meth_34(((au_index_t) ((au_index_t)(array.size))), ((au_index_t) 1));
+        {
+            size_t i = _t57;
+            for (; i <= _t58; i++) {
+                au_span_t* array_tmp_ref0 = &(array);
+                ((au_unit_t)(au_printf("%c", *((au_nat8_t*) au_array_index(array_tmp_ref0, i, sizeof(au_nat8_t))))));
+            }
+        }
+    } else {
+    }
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_130(au_int8_t value) {
+    return ((au_unit_t)(au_printf("%i", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_131(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_132(au_nat16_t value) {
+    return ((au_unit_t)(au_printf("%i", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_133(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_134(au_int16_t value) {
+    return ((au_unit_t)(au_printf("%i", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_135(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_136(au_nat32_t value) {
+    return ((au_unit_t)(au_printf("%u", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_137(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_138(au_int32_t value) {
+    return ((au_unit_t)(au_printf("%i", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_139(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_140(au_nat64_t value) {
+    return ((au_unit_t)(au_printf("%zu", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_141(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_142(au_int64_t value) {
+    return ((au_unit_t)(au_printf("%li", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_143(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_144(au_index_t value) {
+    return ((au_unit_t)(au_printf("%zu", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_145(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_146(size_t value) {
+    return ((au_unit_t)(au_printf("%zu", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_147(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_148(float value) {
+    return ((au_unit_t)(au_printf("%f", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_149(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_150(double value) {
+    return ((au_unit_t)(au_printf("%f", value)));
+    return false;
+}
+
+/*
+  Method
+*/
+au_unit_t meth_151(au_span_t array) {
+    return false;
+}
+
+/*
+  Method
+*/
+mono_2 meth_154(au_nat8_t value) {
+    return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_2 meth_155(au_nat16_t value) {
+    au_bool_t _t59 = (value <= ((au_nat16_t)(UINT8_MAX)));
+    if (_t59) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_156(au_nat32_t value) {
+    au_bool_t _t60 = (value <= ((au_nat32_t)(UINT8_MAX)));
+    if (_t60) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_157(au_nat64_t value) {
+    au_bool_t _t61 = (value <= ((au_nat64_t)(UINT8_MAX)));
+    if (_t61) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_158(au_int8_t value) {
+    au_bool_t _t62 = (value >= 0);
+    if (_t62) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_159(au_int16_t value) {
+    au_bool_t _t63 = ((value >= 0) && (value <= ((au_int16_t)(UINT8_MAX))));
+    if (_t63) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_160(au_int32_t value) {
+    au_bool_t _t64 = ((value >= 0) && (value <= ((au_int32_t)(UINT8_MAX))));
+    if (_t64) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_161(au_int64_t value) {
+    au_bool_t _t65 = ((value >= 0) && (value <= ((au_int64_t)(UINT8_MAX))));
+    if (_t65) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_162(au_index_t value) {
+    au_bool_t _t66 = ((value >= 0) && (value <= ((au_index_t)(UINT8_MAX))));
+    if (_t66) {
+        return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+    } else {
+        return ((mono_2) { .tag = mono_2_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_2 meth_163(float value) {
+    return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_2 meth_164(double value) {
+    return ((mono_2) { .tag = mono_2_tag_Some, .data = { .Some = { .value = ((au_nat8_t)(((au_nat8_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_3 meth_165(au_nat8_t value) {
+    return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_3 meth_166(au_nat16_t value) {
+    return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_3 meth_167(au_nat32_t value) {
+    au_bool_t _t67 = (value <= ((au_nat32_t)(UINT16_MAX)));
+    if (_t67) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_168(au_nat64_t value) {
+    au_bool_t _t68 = (value <= ((au_nat64_t)(UINT16_MAX)));
+    if (_t68) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_169(au_int8_t value) {
+    au_bool_t _t69 = (value >= 0);
+    if (_t69) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_170(au_int16_t value) {
+    au_bool_t _t70 = (value >= 0);
+    if (_t70) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_171(au_int32_t value) {
+    au_bool_t _t71 = ((value >= 0) && (value <= ((au_int32_t)(UINT16_MAX))));
+    if (_t71) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_172(au_int64_t value) {
+    au_bool_t _t72 = ((value >= 0) && (value <= ((au_int64_t)(UINT16_MAX))));
+    if (_t72) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_173(au_index_t value) {
+    au_bool_t _t73 = ((value >= 0) && (value <= ((au_index_t)(UINT16_MAX))));
+    if (_t73) {
+        return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+    } else {
+        return ((mono_3) { .tag = mono_3_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_3 meth_174(float value) {
+    return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_3 meth_175(double value) {
+    return ((mono_3) { .tag = mono_3_tag_Some, .data = { .Some = { .value = ((au_nat16_t)(((au_nat16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_4 meth_176(au_nat8_t value) {
+    return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_4 meth_177(au_nat16_t value) {
+    return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_4 meth_178(au_nat32_t value) {
+    return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_4 meth_179(au_nat64_t value) {
+    au_bool_t _t74 = (value <= ((au_nat64_t)(UINT32_MAX)));
+    if (_t74) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_180(au_int8_t value) {
+    au_bool_t _t75 = (value >= 0);
+    if (_t75) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_181(au_int16_t value) {
+    au_bool_t _t76 = (value >= 0);
+    if (_t76) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_182(au_int32_t value) {
+    au_bool_t _t77 = (value >= 0);
+    if (_t77) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_183(au_int64_t value) {
+    au_bool_t _t78 = ((value >= 0) && (value <= ((au_int64_t)(UINT32_MAX))));
+    if (_t78) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_184(au_index_t value) {
+    au_bool_t _t79 = ((value >= 0) && (value <= ((au_index_t)(UINT32_MAX))));
+    if (_t79) {
+        return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+    } else {
+        return ((mono_4) { .tag = mono_4_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_4 meth_185(float value) {
+    return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_4 meth_186(double value) {
+    return ((mono_4) { .tag = mono_4_tag_Some, .data = { .Some = { .value = ((au_nat32_t)(((au_nat32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_187(au_nat8_t value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_188(au_nat16_t value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_189(au_nat32_t value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_190(au_nat64_t value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_191(au_int8_t value) {
+    au_bool_t _t80 = (value >= 0);
+    if (_t80) {
+        return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+    } else {
+        return ((mono_5) { .tag = mono_5_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_5 meth_192(au_int16_t value) {
+    au_bool_t _t81 = (value >= 0);
+    if (_t81) {
+        return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+    } else {
+        return ((mono_5) { .tag = mono_5_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_5 meth_193(au_int32_t value) {
+    au_bool_t _t82 = (value >= 0);
+    if (_t82) {
+        return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+    } else {
+        return ((mono_5) { .tag = mono_5_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_5 meth_194(au_int64_t value) {
+    au_bool_t _t83 = (value >= 0);
+    if (_t83) {
+        return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+    } else {
+        return ((mono_5) { .tag = mono_5_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_5 meth_195(au_index_t value) {
+    au_bool_t _t84 = ((value >= 0) && (value <= ((au_index_t)(UINT64_MAX))));
+    if (_t84) {
+        return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+    } else {
+        return ((mono_5) { .tag = mono_5_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_5 meth_196(float value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_5 meth_197(double value) {
+    return ((mono_5) { .tag = mono_5_tag_Some, .data = { .Some = { .value = ((au_nat64_t)(((au_nat64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_6 meth_198(au_nat8_t value) {
+    au_bool_t _t85 = (value <= ((au_nat8_t)(INT8_MAX)));
+    if (_t85) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_199(au_nat16_t value) {
+    au_bool_t _t86 = (value <= ((au_nat16_t)(INT8_MAX)));
+    if (_t86) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_200(au_nat32_t value) {
+    au_bool_t _t87 = (value <= ((au_nat32_t)(INT8_MAX)));
+    if (_t87) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_201(au_nat64_t value) {
+    au_bool_t _t88 = (value <= ((au_nat64_t)(INT8_MAX)));
+    if (_t88) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_202(au_int8_t value) {
+    return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_6 meth_203(au_int16_t value) {
+    au_bool_t _t89 = ((value >= ((au_int16_t)(INT8_MIN))) && (value <= ((au_int16_t)(INT8_MAX))));
+    if (_t89) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_204(au_int32_t value) {
+    au_bool_t _t90 = ((value >= ((au_int32_t)(INT8_MIN))) && (value <= ((au_int32_t)(INT8_MAX))));
+    if (_t90) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_205(au_int64_t value) {
+    au_bool_t _t91 = ((value >= ((au_int64_t)(INT8_MIN))) && (value <= ((au_int64_t)(INT8_MAX))));
+    if (_t91) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_206(au_index_t value) {
+    au_bool_t _t92 = ((value >= ((au_index_t)(INT8_MIN))) && (value <= ((au_index_t)(INT8_MAX))));
+    if (_t92) {
+        return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+    } else {
+        return ((mono_6) { .tag = mono_6_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_6 meth_207(float value) {
+    return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_6 meth_208(double value) {
+    return ((mono_6) { .tag = mono_6_tag_Some, .data = { .Some = { .value = ((au_int8_t)(((au_int8_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_7 meth_209(au_nat8_t value) {
+    return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_7 meth_210(au_nat16_t value) {
+    au_bool_t _t93 = (value <= ((au_nat16_t)(INT16_MAX)));
+    if (_t93) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_211(au_nat32_t value) {
+    au_bool_t _t94 = (value <= ((au_nat32_t)(INT16_MAX)));
+    if (_t94) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_212(au_nat64_t value) {
+    au_bool_t _t95 = (value <= ((au_nat64_t)(INT16_MAX)));
+    if (_t95) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_213(au_int8_t value) {
+    return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_7 meth_214(au_int16_t value) {
+    return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_7 meth_215(au_int32_t value) {
+    au_bool_t _t96 = ((value >= ((au_int32_t)(INT16_MIN))) && (value <= ((au_int32_t)(INT16_MAX))));
+    if (_t96) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_216(au_int64_t value) {
+    au_bool_t _t97 = ((value >= ((au_int64_t)(INT16_MIN))) && (value <= ((au_int64_t)(INT16_MAX))));
+    if (_t97) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_217(au_index_t value) {
+    au_bool_t _t98 = ((value >= ((au_index_t)(INT16_MIN))) && (value <= ((au_index_t)(INT16_MAX))));
+    if (_t98) {
+        return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+    } else {
+        return ((mono_7) { .tag = mono_7_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_7 meth_218(float value) {
+    return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_7 meth_219(double value) {
+    return ((mono_7) { .tag = mono_7_tag_Some, .data = { .Some = { .value = ((au_int16_t)(((au_int16_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_220(au_nat8_t value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_221(au_nat16_t value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_222(au_nat32_t value) {
+    au_bool_t _t99 = (value <= ((au_nat32_t)(INT32_MAX)));
+    if (_t99) {
+        return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+    } else {
+        return ((mono_8) { .tag = mono_8_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_8 meth_223(au_nat64_t value) {
+    au_bool_t _t100 = (value <= ((au_nat64_t)(INT32_MAX)));
+    if (_t100) {
+        return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+    } else {
+        return ((mono_8) { .tag = mono_8_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_8 meth_224(au_int8_t value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_225(au_int16_t value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_226(au_int32_t value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_227(au_int64_t value) {
+    au_bool_t _t101 = ((value >= ((au_int64_t)(INT32_MIN))) && (value <= ((au_int64_t)(INT32_MAX))));
+    if (_t101) {
+        return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+    } else {
+        return ((mono_8) { .tag = mono_8_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_8 meth_228(au_index_t value) {
+    au_bool_t _t102 = (value <= ((au_index_t)(INT32_MAX)));
+    if (_t102) {
+        return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+    } else {
+        return ((mono_8) { .tag = mono_8_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_8 meth_229(float value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_8 meth_230(double value) {
+    return ((mono_8) { .tag = mono_8_tag_Some, .data = { .Some = { .value = ((au_int32_t)(((au_int32_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_231(au_nat8_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_232(au_nat16_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_233(au_nat32_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_234(au_nat64_t value) {
+    au_bool_t _t103 = (value <= ((au_nat64_t)(INT64_MAX)));
+    if (_t103) {
+        return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+    } else {
+        return ((mono_9) { .tag = mono_9_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_9 meth_235(au_int8_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_236(au_int16_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_237(au_int32_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_238(au_int64_t value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_239(au_index_t value) {
+    au_bool_t _t104 = ((value >= ((au_index_t)(INT64_MIN))) && (value <= ((au_index_t)(INT64_MAX))));
+    if (_t104) {
+        return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+    } else {
+        return ((mono_9) { .tag = mono_9_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_9 meth_240(float value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_9 meth_241(double value) {
+    return ((mono_9) { .tag = mono_9_tag_Some, .data = { .Some = { .value = ((au_int64_t)(((au_int64_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_10 meth_242(au_nat8_t value) {
+    return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_10 meth_243(au_nat16_t value) {
+    au_bool_t _t105 = (value <= ((au_nat16_t)(SIZE_MAX)));
+    if (_t105) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_244(au_nat32_t value) {
+    au_bool_t _t106 = (value <= ((au_nat32_t)(SIZE_MAX)));
+    if (_t106) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_245(au_nat64_t value) {
+    au_bool_t _t107 = (value <= ((au_nat64_t)(SIZE_MAX)));
+    if (_t107) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_246(au_int8_t value) {
+    au_bool_t _t108 = (value >= 0);
+    if (_t108) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_247(au_int16_t value) {
+    au_bool_t _t109 = (value >= 0);
+    if (_t109) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_248(au_int32_t value) {
+    au_index_t cast;
+    cast = ((au_index_t)(((au_index_t)(value))));
+    au_bool_t _t110 = ((value >= 0) && (cast <= ((au_index_t)(SIZE_MAX))));
+    if (_t110) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_249(au_int64_t value) {
+    au_bool_t _t111 = ((value >= 0) && (value <= ((au_int64_t)(SIZE_MAX))));
+    if (_t111) {
+        return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+    } else {
+        return ((mono_10) { .tag = mono_10_tag_None, .data = { .None = {  } } });
+    }
+}
+
+/*
+  Method
+*/
+mono_10 meth_250(au_index_t value) {
+    return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_10 meth_251(float value) {
+    return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_10 meth_252(double value) {
+    return ((mono_10) { .tag = mono_10_tag_Some, .data = { .Some = { .value = ((au_index_t)(((au_index_t)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_253(au_nat8_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_254(au_nat16_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_255(au_nat32_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_256(au_nat64_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_257(au_int8_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_258(au_int16_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_259(au_int32_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_260(au_int64_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_261(au_index_t value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_262(float value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+mono_11 meth_263(double value) {
+    return ((mono_11) { .tag = mono_11_tag_Some, .data = { .Some = { .value = ((float)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_264(au_nat8_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((float)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_265(au_nat16_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_266(au_nat32_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_267(au_nat64_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_268(au_int8_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_269(au_int16_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_270(au_int32_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_271(au_int64_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_272(au_index_t value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_273(float value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = ((double)(((double)(value)))) } } });
+}
+
+/*
+  Method
+*/
+mono_12 meth_274(double value) {
+    return ((mono_12) { .tag = mono_12_tag_Some, .data = { .Some = { .value = value } } });
+}
+
+/*
+  Method
+*/
+au_nat8_t meth_275(au_nat8_t lhs, au_nat8_t rhs) {
+    au_bool_t _t112 = (rhs == 0);
+    if (_t112) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Nat8)", 29));
+    } else {
+    }
+    return ((au_nat8_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_nat16_t meth_276(au_nat16_t lhs, au_nat16_t rhs) {
+    au_bool_t _t113 = (rhs == 0);
+    if (_t113) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Nat16)", 30));
+    } else {
+    }
+    return ((au_nat16_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_nat32_t meth_277(au_nat32_t lhs, au_nat32_t rhs) {
+    au_bool_t _t114 = (rhs == 0);
+    if (_t114) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Nat32)", 30));
+    } else {
+    }
+    return ((au_nat32_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_nat64_t meth_278(au_nat64_t lhs, au_nat64_t rhs) {
+    au_bool_t _t115 = (rhs == 0);
+    if (_t115) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Nat64)", 30));
+    } else {
+    }
+    return ((au_nat64_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_int8_t meth_279(au_int8_t lhs, au_int8_t rhs) {
+    au_bool_t _t117 = (rhs == 0);
+    if (_t117) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Int8)", 29));
+    } else {
+    }
+    au_bool_t _t116 = ((lhs == Austral__Pervasive____minimum_int8) && (rhs == -1));
+    if (_t116) {
+        decl_9(au_make_span_from_string("Overflow in rem(Int8)", 21));
+    } else {
+    }
+    return ((au_int8_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_int16_t meth_280(au_int16_t lhs, au_int16_t rhs) {
+    au_bool_t _t119 = (rhs == 0);
+    if (_t119) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Int16)", 30));
+    } else {
+    }
+    au_bool_t _t118 = ((lhs == Austral__Pervasive____minimum_int16) && (rhs == -1));
+    if (_t118) {
+        decl_9(au_make_span_from_string("Overflow in rem(Int16)", 22));
+    } else {
+    }
+    return ((au_int16_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_int32_t meth_281(au_int32_t lhs, au_int32_t rhs) {
+    au_bool_t _t121 = (rhs == 0);
+    if (_t121) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Int32)", 30));
+    } else {
+    }
+    au_bool_t _t120 = ((lhs == Austral__Pervasive____minimum_int32) && (rhs == -1));
+    if (_t120) {
+        decl_9(au_make_span_from_string("Overflow in rem(Int32)", 22));
+    } else {
+    }
+    return ((au_int32_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_int64_t meth_282(au_int64_t lhs, au_int64_t rhs) {
+    au_bool_t _t123 = (rhs == 0);
+    if (_t123) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Int64)", 30));
+    } else {
+    }
+    au_bool_t _t122 = ((lhs == Austral__Pervasive____minimum_int64) && (rhs == -1));
+    if (_t122) {
+        decl_9(au_make_span_from_string("Overflow in rem(Int64)", 22));
+    } else {
+    }
+    return ((au_int64_t)((lhs % rhs)));
+}
+
+/*
+  Method
+*/
+au_index_t meth_283(au_index_t lhs, au_index_t rhs) {
+    au_bool_t _t124 = (rhs == 0);
+    if (_t124) {
+        decl_9(au_make_span_from_string("Division by zero in rem(Index)", 30));
+    } else {
+    }
+    return ((au_index_t)((lhs % rhs)));
+}
+/* --- END translation unit for module 'Austral.Pervasive' --- */
+
+/* --- BEGIN translation unit for module 'Austral.Memory' --- */
+/*
+  Function forward declaratioon
+*/
+size_t decl_272(size_t elem_size, au_index_t count);
+
+/*
+  Function forward declaratioon
+*/
+au_index_t decl_280(size_t size);
+
+/*
+  Function
+*/
+size_t decl_272(size_t elem_size, au_index_t count) {
+    size_t count_bytes;
+    count_bytes = ((size_t)(count));
+    size_t size;
+    size = meth_39(((size_t) elem_size), ((size_t) count_bytes));
+    return size;
+}
+
+/*
+  Function
+*/
+au_index_t decl_280(size_t size) {
+    return ((au_index_t)(size));
+}
+/* --- END translation unit for module 'Austral.Memory' --- */
+
+/* --- BEGIN translation unit for module 'dpop' --- */
+/*
+  Record monomorph: DPoPToken[]
+*/
+struct mono_13;
+typedef struct mono_13 mono_13;
+
+/*
+  Record monomorph: DPoPToken[]
+*/
+typedef struct mono_13 {au_nat64_t content;} mono_13;
+
+/*
+  Function forward declaratioon
+*/
+mono_13 decl_282(au_nat64_t content);
+
+/*
+  Function forward declaratioon
+*/
+au_unit_t decl_284(mono_13 token);
+
+/*
+  Function
+*/
+mono_13 decl_282(au_nat64_t content) {
+    return ((mono_13) { .content = content });
+}
+
+/*
+  Function
+*/
+au_unit_t decl_284(mono_13 token) {
+    mono_13 tmp1 = token;
+    au_nat64_t content = (tmp1).content;
+    return false;
+}
+/* --- END translation unit for module 'dpop' --- */
+
+/* --- BEGIN translation unit for module 'Austral.Wrappers' --- */
+
+/* --- END translation unit for module 'Austral.Wrappers' --- */
+
+/* --- BEGIN translation unit for module 'Wrappers' --- */
+
+/* --- END translation unit for module 'Wrappers' --- */
