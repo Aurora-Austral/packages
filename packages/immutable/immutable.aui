@@ -1,0 +1,113 @@
+-- Immutable Module Interface
+-- Immutable data structures with compile-time guarantees
+-- Any type can be made immutable
+
+module Immutable is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate,
+        load,
+        store
+    );
+
+    -- Immutable wrapper for any type
+    -- Once created, the value cannot be modified
+    generic [T: Type]
+    record Immutable is
+        value: T;
+    end;
+
+    -- Create immutable value
+    generic [T: Type]
+    function makeImmutable(value: T): Immutable[T];
+
+    -- Extract value (immutable, no copy needed)
+    generic [T: Type]
+    function getImmutable(immutable: Immutable[T]): T;
+
+    -- Transform immutable value (returns new immutable)
+    generic [T: Type, U: Type]
+    function mapImmutable(
+        immutable: Immutable[T],
+        transformer: Function[T, U]
+    ): Immutable[U];
+
+    -- Specific immutable types
+
+    -- Immutable String
+    record ImmutableString: Free is
+        data: Pointer[Nat8];
+        length: Nat64;
+    end;
+
+    function makeImmutableString(content: String): ImmutableString;
+    function getImmutableString(str: ImmutableString): String;
+
+    -- Immutable Number
+    generic [N: Type]
+    record ImmutableNumber is
+        value: N;
+    end;
+
+    function makeImmutableInt(value: Int64): ImmutableNumber[Int64];
+    function makeImmutableNat(value: Nat64): ImmutableNumber[Nat64];
+    function getImmutableNumber(num: ImmutableNumber[N]): N;
+
+    -- Immutable Array (fixed size)
+    generic [T: Type, N: Nat]
+    record ImmutableArray is
+        data: FixedArray[T, N];
+    end;
+
+    function makeImmutableArray[T: Type, N: Nat](values: FixedArray[T, N]): ImmutableArray[T, N];
+    function getImmutableArray[T: Type, N: Nat](arr: ImmutableArray[T, N]): FixedArray[T, N];
+    function immutableArrayLength[T: Type, N: Nat](arr: ImmutableArray[T, N]): Nat;
+
+    -- Immutable Option
+    generic [T: Type]
+    union ImmutableOption: Free is
+        case Some(value: T);
+        case None;
+    end;
+
+    function makeImmutableSome[T: Type](value: T): ImmutableOption[T];
+    function makeImmutableNone[T: Type]: ImmutableOption[T];
+    function getImmutableOption[T: Type](opt: ImmutableOption[T]): T;
+
+    -- Immutable Result
+    generic [T: Type, E: Type]
+    union ImmutableResult: Free is
+        case Success(value: T);
+        case Error(error: E);
+    end;
+
+    function makeImmutableSuccess[T: Type, E: Type](value: T): ImmutableResult[T, E];
+    function makeImmutableError[T: Type, E: Type](error: E): ImmutableResult[T, E];
+    function getImmutableResult[T: Type, E: Type](result: ImmutableResult[T, E]): T;
+
+    -- Immutable Record (using capability pattern)
+    generic [T: Type]
+    capability ImmutableAccess is
+        function getValue(): T;
+    end;
+
+    -- Create immutable record
+    generic [T: Type]
+    function makeImmutableRecord(value: T): ImmutableAccess[T];
+
+    -- Scoped immutable operations
+    generic [T: Type, U: Type]
+    function withImmutable(
+        immutable: Immutable[T],
+        action: Function[T, U]
+    ): U;
+
+    -- Pattern matching helpers
+    generic [T: Type]
+    function matchImmutable[T: Type, U: Type](
+        immutable: Immutable[T],
+        onValue: Function[T, U]
+    ): U;
+
+end module.

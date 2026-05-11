@@ -1,0 +1,198 @@
+-- Crypto Hash Module Body
+-- Implementation of cryptographically secure hashing
+
+module body CryptoHash is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate,
+        load,
+        store
+    );
+    import Austral.String (
+        length,
+        nth
+    );
+
+    -- Create SecretData from string
+    function makeSecretData(content: String): SecretData is
+        let len: Nat64 := length(content);
+        let ptr: Pointer[Nat8] := allocate(len);
+        
+        -- Copy string bytes to secure memory
+        let i: Nat64 := 0;
+        while i < len do
+            let byte: Nat8 := nth(content, i);
+            store(ptr, i, byte);
+            i := i + 1;
+        end while;
+        
+        return SecretData(
+            data => ptr,
+            length => len
+        );
+    end;
+
+    -- Simple SHA-256 implementation (placeholder - use real crypto library in production)
+    function sha256(data: SecretData): Hash256 is
+        -- In production, this would call a real SHA-256 implementation
+        -- For now, we'll create a simple hash for demonstration
+        
+        let hash: FixedArray[Nat8, 32] := makeFixedArray[Nat8, 32](0);
+        
+        -- Simple mixing function (NOT cryptographically secure - just for demo)
+        let i: Nat64 := 0;
+        while i < data.length do
+            let byte: Nat8 := load(data.data, i);
+            let hashIdx: Nat64 := i mod 32;
+            let currentByte: Nat8 := getFixedArray(hash, hashIdx);
+            let newByte: Nat8 := (currentByte + byte) mod 256;
+            setFixedArray(&hash, hashIdx, newByte);
+            i := i + 1;
+        end while;
+        
+        -- Deallocate sensitive data (consumed)
+        deallocate(data.data, data.length);
+        
+        return Hash256(bytes => hash);
+    end;
+
+    -- SHA-512 implementation
+    function sha512(data: SecretData): Hash512 is
+        let hash: FixedArray[Nat8, 64] := makeFixedArray[Nat8, 64](0);
+        
+        -- Simple mixing (NOT secure - demo only)
+        let i: Nat64 := 0;
+        while i < data.length do
+            let byte: Nat8 := load(data.data, i);
+            let hashIdx: Nat64 := i mod 64;
+            let currentByte: Nat8 := getFixedArray(hash, hashIdx);
+            let newByte: Nat8 := (currentByte + byte) mod 256;
+            setFixedArray(&hash, hashIdx, newByte);
+            i := i + 1;
+        end while;
+        
+        deallocate(data.data, data.length);
+        
+        return Hash512(bytes => hash);
+    end;
+
+    -- Constant-time comparison (prevents timing attacks)
+    function compareHash256(a: Hash256, b: Hash256): Bool is
+        let result: Nat8 := 0;
+        let i: Nat64 := 0;
+        
+        -- XOR all bytes - if any differ, result will be non-zero
+        while i < 32 do
+            let byteA: Nat8 := getFixedArray(a.bytes, i);
+            let byteB: Nat8 := getFixedArray(b.bytes, i);
+            result := result | (byteA ^ byteB);
+            i := i + 1;
+        end while;
+        
+        return result = 0;
+    end;
+
+    function compareHash512(a: Hash512, b: Hash512): Bool is
+        let result: Nat8 := 0;
+        let i: Nat64 := 0;
+        
+        while i < 64 do
+            let byteA: Nat8 := getFixedArray(a.bytes, i);
+            let byteB: Nat8 := getFixedArray(b.bytes, i);
+            result := result | (byteA ^ byteB);
+            i := i + 1;
+        end while;
+        
+        return result = 0;
+    end;
+
+    -- Convert hash to hex string
+    function hash256ToHex(hash: Hash256): String is
+        let hex: String := "";
+        let i: Nat64 := 0;
+        
+        while i < 32 do
+            let byte: Nat8 := getFixedArray(hash.bytes, i);
+            let high: Nat8 := byte / 16;
+            let low: Nat8 := byte mod 16;
+            hex := concat(hex, byteToHex(high));
+            hex := concat(hex, byteToHex(low));
+            i := i + 1;
+        end while;
+        
+        return hex;
+    end;
+
+    function hash512ToHex(hash: Hash512): String is
+        let hex: String := "";
+        let i: Nat64 := 0;
+        
+        while i < 64 do
+            let byte: Nat8 := getFixedArray(hash.bytes, i);
+            let high: Nat8 := byte / 16;
+            let low: Nat8 := byte mod 16;
+            hex := concat(hex, byteToHex(high));
+            hex := concat(hex, byteToHex(low));
+            i := i + 1;
+        end while;
+        
+        return hex;
+    end;
+
+    -- Helper: convert nibble to hex char
+    function byteToHex(nibble: Nat8): String is
+        if nibble < 10 then
+            return intToString(nibble);
+        else
+            -- A=10, B=11, C=12, D=13, E=14, F=15
+            case nibble of
+                when 10 then return "a";
+                when 11 then return "b";
+                when 12 then return "c";
+                when 13 then return "d";
+                when 14 then return "e";
+                when 15 then return "f";
+                else return "0";
+            end case;
+        end if;
+    end;
+
+    -- HMAC-SHA256
+    function hmacSha256(key: SecretData, message: SecretData): Hash256 is
+        -- Simplified HMAC (real implementation would follow RFC 2104)
+        
+        -- For demo: just hash key + message
+        let combinedLen: Nat64 := key.length + message.length;
+        let combined: Pointer[Nat8] := allocate(combinedLen);
+        
+        -- Copy key
+        let i: Nat64 := 0;
+        while i < key.length do
+            let byte: Nat8 := load(key.data, i);
+            store(combined, i, byte);
+            i := i + 1;
+        end while;
+        
+        -- Copy message
+        let j: Nat64 := 0;
+        while j < message.length do
+            let byte: Nat8 := load(message.data, j);
+            store(combined, key.length + j, byte);
+            j := j + 1;
+        end while;
+        
+        -- Clean up inputs
+        deallocate(key.data, key.length);
+        deallocate(message.data, message.length);
+        
+        -- Hash combined data
+        let combinedData: SecretData := SecretData(
+            data => combined,
+            length => combinedLen
+        );
+        
+        return sha256(combinedData);
+    end;
+
+end module body.

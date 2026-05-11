@@ -1,0 +1,210 @@
+-- Linear AutoDestroy Module Body
+-- Implementation of automatic resource cleanup
+
+module body LinearAutoDestroy is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate,
+        load,
+        store
+    );
+    import Austral.String (
+        length,
+        nth,
+        concat
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    -- Generic auto-destroy wrapper
+    generic [T: Type, R: Linear]
+    function makeAutoDestroy(
+        resource: R,
+        extractor: Function[R, T],
+        destructor: Function[R, Unit]
+    ): AutoDestroy[T, R] is
+        return AutoDestroy(
+            resource => resource,
+            extractor => extractor,
+            destructor => destructor
+        );
+    end;
+
+    -- Extract value and automatically destroy
+    generic [T: Type, R: Linear]
+    function extract(wrapper: AutoDestroy[T, R]): T is
+        -- Extract the value
+        let value: T := wrapper.extractor(wrapper.resource);
+        
+        -- Automatically destroy the resource
+        wrapper.destructor(wrapper.resource);
+        
+        -- Return the extracted value
+        return value;
+    end;
+
+    -- Scoped resource pattern
+    generic [T: Type, R: Linear]
+    function withResource(
+        resource: R,
+        action: Function[R, T],
+        cleanup: Function[R, Unit]
+    ): T is
+        -- Execute action with resource
+        let result: T := action(resource);
+        
+        -- Automatically cleanup
+        cleanup(resource);
+        
+        return result;
+    end;
+
+    -- Auto-destroy file implementation
+    function openAutoFile(path: String): AutoFile is
+        printLn(concat("Opening file: ", path));
+        
+        -- Simulate opening file
+        let fd: Int32 := 42;
+        
+        return AutoFile(
+            fd => fd,
+            path => path
+        );
+    end;
+
+    function readAutoFile(file: AutoFile): String is
+        printLn(concat("Reading file: ", file.path));
+        
+        -- Read content
+        let content: String := "File content from: " ++ file.path;
+        
+        -- Automatically close file
+        printLn(concat("Auto-closing file: ", file.path));
+        -- In production: close(file.fd)
+        
+        return content;
+    end;
+
+    -- Auto-destroy connection implementation
+    function connectAuto(host: String): AutoConnection is
+        printLn(concat("Connecting to: ", host));
+        
+        let connId: Int32 := 123;
+        
+        return AutoConnection(
+            connId => connId,
+            host => host
+        );
+    end;
+
+    function queryAuto(conn: AutoConnection, sql: String): String is
+        printLn(concat("Executing query: ", sql));
+        
+        -- Execute query
+        let result: String := "Query result from " ++ conn.host;
+        
+        -- Automatically close connection
+        printLn(concat("Auto-closing connection to: ", conn.host));
+        -- In production: close(conn.connId)
+        
+        return result;
+    end;
+
+    -- Auto-destroy secret implementation
+    function makeAutoSecret(content: String): AutoSecret is
+        let len: Nat64 := length(content);
+        let ptr: Pointer[Nat8] := allocate(len);
+        
+        -- Copy content to secure memory
+        let i: Nat64 := 0;
+        while i < len do
+            let byte: Nat8 := nth(content, i);
+            store(ptr, i, byte);
+            i := i + 1;
+        end while;
+        
+        return AutoSecret(
+            data => ptr,
+            length => len
+        );
+    end;
+
+    function useAutoSecret(secret: AutoSecret): String is
+        -- Use the secret
+        let result: String := "Secret processed";
+        
+        -- Automatically wipe memory
+        printLn("Auto-wiping secret from memory...");
+        
+        -- Zero out memory before deallocation
+        let i: Nat64 := 0;
+        while i < secret.length do
+            store(secret.data, i, 0);
+            i := i + 1;
+        end while;
+        
+        -- Deallocate
+        deallocate(secret.data, secret.length);
+        
+        return result;
+    end;
+
+    -- Auto-destroy lock implementation
+    function acquireAutoLock(resource: String): AutoLock is
+        printLn(concat("Acquiring lock on: ", resource));
+        
+        let lockId: Int32 := 999;
+        
+        return AutoLock(
+            lockId => lockId,
+            resource => resource
+        );
+    end;
+
+    generic [T: Type]
+    function withAutoLock(lock: AutoLock, action: Function[Unit, T]): T is
+        printLn(concat("Lock acquired on: ", lock.resource));
+        
+        -- Execute action
+        let result: T := action(nil);
+        
+        -- Automatically release lock
+        printLn(concat("Auto-releasing lock on: ", lock.resource));
+        -- In production: unlock(lock.lockId)
+        
+        return result;
+    end;
+
+    -- Auto-destroy transaction implementation
+    function beginAutoTransaction(): AutoTransaction is
+        printLn("Beginning transaction...");
+        
+        let txId: Int32 := 777;
+        
+        return AutoTransaction(
+            txId => txId,
+            committed => false
+        );
+    end;
+
+    function commitAuto(tx: AutoTransaction): Bool is
+        if tx.committed then
+            printLn("Transaction already committed");
+            return true;
+        else
+            printLn("Committing transaction...");
+            -- In production: commit(tx.txId)
+            
+            -- Mark as committed
+            let tx2: AutoTransaction := AutoTransaction(
+                txId => tx.txId,
+                committed => true
+            );
+            
+            return true;
+        end if;
+    end;
+
+end module body.

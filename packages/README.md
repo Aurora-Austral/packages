@@ -9,6 +9,9 @@ This directory contains the highly secure packages comprising the **Aurora Vault
 - **[linear-event](./linear-event)**: Event system guaranteeing that every received event is explicitly processed or acknowledged.
 - **[secret-handle](./secret-handle)**: Secure memory management with forced wipe/cleanup of sensitive data before disposal.
 - **[session-handle](./session-handle)**: User session control with guaranteed closure to prevent state leaks.
+- **[linear-autodestroy](./linear-autodestroy)**: User session control with guaranteed closure to prevent state leaks.
+- **[file-handle](./file-handle)**: User session control with guaranteed closure to prevent state leaks.
+- **[immutable](./immutable)**: User session control with guaranteed closure to prevent state leaks.
 
 ---
 

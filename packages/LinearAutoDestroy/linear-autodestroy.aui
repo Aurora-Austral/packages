@@ -1,0 +1,93 @@
+-- Linear AutoDestroy Module Interface
+-- Automatic resource cleanup when value is extracted
+-- RAII pattern for Austral
+
+module LinearAutoDestroy is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate
+    );
+
+    -- Generic auto-destroy wrapper for any linear resource
+    -- When you extract the value, the resource is automatically destroyed
+    generic [T: Type, R: Linear]
+    record AutoDestroy is
+        resource: R;
+        extractor: Function[R, T];
+        destructor: Function[R, Unit];
+    end;
+
+    -- Create an auto-destroy wrapper
+    generic [T: Type, R: Linear]
+    function makeAutoDestroy(
+        resource: R,
+        extractor: Function[R, T],
+        destructor: Function[R, Unit]
+    ): AutoDestroy[T, R];
+
+    -- Extract value and automatically destroy resource
+    generic [T: Type, R: Linear]
+    function extract(wrapper: AutoDestroy[T, R]): T;
+
+    -- Specific implementations for common types
+
+    -- Auto-destroy for file handles
+    record AutoFile: Linear is
+        fd: Int32;
+        path: String;
+    end;
+
+    function openAutoFile(path: String): AutoFile;
+    function readAutoFile(file: AutoFile): String;
+    -- File is automatically closed when content is read
+
+    -- Auto-destroy for database connections
+    record AutoConnection: Linear is
+        connId: Int32;
+        host: String;
+    end;
+
+    function connectAuto(host: String): AutoConnection;
+    function queryAuto(conn: AutoConnection, sql: String): String;
+    -- Connection is automatically closed after query
+
+    -- Auto-destroy for secrets
+    record AutoSecret: Linear is
+        data: Pointer[Nat8];
+        length: Nat64;
+    end;
+
+    function makeAutoSecret(content: String): AutoSecret;
+    function useAutoSecret(secret: AutoSecret): String;
+    -- Secret is automatically wiped from memory after use
+
+    -- Auto-destroy for locks
+    record AutoLock: Linear is
+        lockId: Int32;
+        resource: String;
+    end;
+
+    function acquireAutoLock(resource: String): AutoLock;
+    function withAutoLock(lock: AutoLock, action: Function[Unit, T]): T;
+    -- Lock is automatically released after action
+
+    -- Auto-destroy for transactions
+    record AutoTransaction: Linear is
+        txId: Int32;
+        committed: Bool;
+    end;
+
+    function beginAutoTransaction(): AutoTransaction;
+    function commitAuto(tx: AutoTransaction): Bool;
+    -- Transaction is automatically rolled back if not committed
+
+    -- Scoped resource pattern
+    generic [T: Type, R: Linear]
+    function withResource(
+        resource: R,
+        action: Function[R, T],
+        cleanup: Function[R, Unit]
+    ): T;
+
+end module.

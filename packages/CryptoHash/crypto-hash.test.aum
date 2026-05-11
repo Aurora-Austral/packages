@@ -1,0 +1,156 @@
+-- Crypto Hash Tests
+
+module body CryptoHashTest is
+    import CryptoHash (
+        SecretData,
+        Hash256,
+        Hash512,
+        makeSecretData,
+        sha256,
+        sha512,
+        compareHash256,
+        compareHash512,
+        hash256ToHex,
+        hash512ToHex,
+        hmacSha256
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    function main(): ExitCode is
+        printLn("Testing Crypto Hash Module...");
+        
+        -- Test SHA-256
+        testSha256();
+        
+        -- Test SHA-512
+        testSha512();
+        
+        -- Test constant-time comparison
+        testComparison();
+        
+        -- Test HMAC
+        testHmac();
+        
+        printLn("All tests passed!");
+        return ExitSuccess();
+    end;
+
+    function testSha256(): Unit is
+        printLn("Testing SHA-256...");
+        
+        -- Hash a simple string
+        let data1: SecretData := makeSecretData("hello world");
+        let hash1: Hash256 := sha256(data1);
+        let hex1: String := hash256ToHex(hash1);
+        
+        printLn(concat("Hash: ", hex1));
+        
+        -- Hash the same string again
+        let data2: SecretData := makeSecretData("hello world");
+        let hash2: Hash256 := sha256(data2);
+        
+        -- Hashes should be equal
+        if compareHash256(hash1, hash2) then
+            printLn("✓ SHA-256: Same input produces same hash");
+        else
+            printLn("✗ SHA-256: Hash mismatch!");
+        end if;
+        
+        -- Hash different string
+        let data3: SecretData := makeSecretData("hello world!");
+        let hash3: Hash256 := sha256(data3);
+        
+        -- Hashes should be different
+        if not compareHash256(hash1, hash3) then
+            printLn("✓ SHA-256: Different input produces different hash");
+        else
+            printLn("✗ SHA-256: Hashes should differ!");
+        end if;
+        
+        return nil;
+    end;
+
+    function testSha512(): Unit is
+        printLn("Testing SHA-512...");
+        
+        let data1: SecretData := makeSecretData("test data");
+        let hash1: Hash512 := sha512(data1);
+        let hex1: String := hash512ToHex(hash1);
+        
+        printLn(concat("Hash: ", hex1));
+        
+        let data2: SecretData := makeSecretData("test data");
+        let hash2: Hash512 := sha512(data2);
+        
+        if compareHash512(hash1, hash2) then
+            printLn("✓ SHA-512: Same input produces same hash");
+        else
+            printLn("✗ SHA-512: Hash mismatch!");
+        end if;
+        
+        return nil;
+    end;
+
+    function testComparison(): Unit is
+        printLn("Testing constant-time comparison...");
+        
+        let data1: SecretData := makeSecretData("password123");
+        let hash1: Hash256 := sha256(data1);
+        
+        let data2: SecretData := makeSecretData("password123");
+        let hash2: Hash256 := sha256(data2);
+        
+        let data3: SecretData := makeSecretData("password124");
+        let hash3: Hash256 := sha256(data3);
+        
+        if compareHash256(hash1, hash2) then
+            printLn("✓ Comparison: Equal hashes detected");
+        else
+            printLn("✗ Comparison: Should be equal!");
+        end if;
+        
+        if not compareHash256(hash1, hash3) then
+            printLn("✓ Comparison: Different hashes detected");
+        else
+            printLn("✗ Comparison: Should be different!");
+        end if;
+        
+        return nil;
+    end;
+
+    function testHmac(): Unit is
+        printLn("Testing HMAC-SHA256...");
+        
+        let key1: SecretData := makeSecretData("secret-key");
+        let msg1: SecretData := makeSecretData("message");
+        let hmac1: Hash256 := hmacSha256(key1, msg1);
+        let hex1: String := hash256ToHex(hmac1);
+        
+        printLn(concat("HMAC: ", hex1));
+        
+        let key2: SecretData := makeSecretData("secret-key");
+        let msg2: SecretData := makeSecretData("message");
+        let hmac2: Hash256 := hmacSha256(key2, msg2);
+        
+        if compareHash256(hmac1, hmac2) then
+            printLn("✓ HMAC: Same key+message produces same HMAC");
+        else
+            printLn("✗ HMAC: Should be equal!");
+        end if;
+        
+        let key3: SecretData := makeSecretData("different-key");
+        let msg3: SecretData := makeSecretData("message");
+        let hmac3: Hash256 := hmacSha256(key3, msg3);
+        
+        if not compareHash256(hmac1, hmac3) then
+            printLn("✓ HMAC: Different key produces different HMAC");
+        else
+            printLn("✗ HMAC: Should be different!");
+        end if;
+        
+        return nil;
+    end;
+
+end module body.

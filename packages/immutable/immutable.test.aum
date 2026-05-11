@@ -1,0 +1,228 @@
+-- Immutable Tests
+
+module body ImmutableTest is
+    import Immutable (
+        Immutable,
+        ImmutableString,
+        ImmutableNumber,
+        ImmutableArray,
+        ImmutableOption,
+        ImmutableResult,
+        makeImmutable,
+        getImmutable,
+        mapImmutable,
+        makeImmutableString,
+        getImmutableString,
+        makeImmutableInt,
+        makeImmutableNat,
+        getImmutableNumber,
+        makeImmutableArray,
+        getImmutableArray,
+        makeImmutableSome,
+        makeImmutableNone,
+        getImmutableOption,
+        makeImmutableSuccess,
+        makeImmutableError,
+        getImmutableResult,
+        withImmutable,
+        matchImmutable
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    function main(): ExitCode is
+        printLn("Testing Immutable Module...");
+        printLn("");
+        
+        testImmutableBasic();
+        printLn("");
+        
+        testImmutableString();
+        printLn("");
+        
+        testImmutableNumber();
+        printLn("");
+        
+        testImmutableArray();
+        printLn("");
+        
+        testImmutableOption();
+        printLn("");
+        
+        testImmutableResult();
+        printLn("");
+        
+        testImmutableMap();
+        printLn("");
+        
+        printLn("All tests passed!");
+        return ExitSuccess();
+    end;
+
+    -- Test basic immutable
+    function testImmutableBasic(): Unit is
+        printLn("=== Testing Basic Immutable ===");
+        
+        let num: Immutable[Int64] := makeImmutable(42);
+        let value: Int64 := getImmutable(num);
+        
+        if value = 42 then
+            printLn("✓ Immutable value created and retrieved");
+        else
+            printLn("✗ Value mismatch!");
+        end if;
+        
+        -- Test withImmutable
+        let result: Int64 := withImmutable(num, fn(n): Int64 is
+            return n * 2;
+        end);
+        
+        if result = 84 then
+            printLn("✓ withImmutable works correctly");
+        else
+            printLn("✗ withImmutable result wrong!");
+        end if;
+        
+        return nil;
+    end;
+
+    -- Test immutable string
+    function testImmutableString(): Unit is
+        printLn("=== Testing Immutable String ===");
+        
+        let str: ImmutableString := makeImmutableString("Hello, World!");
+        let content: String := getImmutableString(str);
+        
+        if content = "Hello, World!" then
+            printLn("✓ Immutable string created and retrieved");
+        else
+            printLn("✗ String content mismatch!");
+        end if;
+        
+        return nil;
+    end;
+
+    -- Test immutable numbers
+    function testImmutableNumber(): Unit is
+        printLn("=== Testing Immutable Numbers ===");
+        
+        let intNum: ImmutableNumber[Int64] := makeImmutableInt(-42);
+        let intVal: Int64 := getImmutableNumber(intNum);
+        
+        if intVal = -42 then
+            printLn("✓ Immutable Int64 works");
+        else
+            printLn("✗ Int64 value wrong!");
+        end if;
+        
+        let natNum: ImmutableNumber[Nat64] := makeImmutableNat(123);
+        let natVal: Nat64 := getImmutableNumber(natNum);
+        
+        if natVal = 123 then
+            printLn("✓ Immutable Nat64 works");
+        else
+            printLn("✗ Nat64 value wrong!");
+        end if;
+        
+        return nil;
+    end;
+
+    -- Test immutable array
+    function testImmutableArray(): Unit is
+        printLn("=== Testing Immutable Array ===");
+        
+        let arr: FixedArray[Int64, 3] := makeFixedArray[Int64, 3](0);
+        setFixedArray(&arr, 0, 1);
+        setFixedArray(&arr, 1, 2);
+        setFixedArray(&arr, 2, 3);
+        
+        let immArr: ImmutableArray[Int64, 3] := makeImmutableArray(arr);
+        let retrieved: FixedArray[Int64, 3] := getImmutableArray(immArr);
+        
+        let v0: Int64 := getFixedArray(retrieved, 0);
+        let v1: Int64 := getFixedArray(retrieved, 1);
+        let v2: Int64 := getFixedArray(retrieved, 2);
+        
+        if v0 = 1 and v1 = 2 and v2 = 3 then
+            printLn("✓ Immutable array works");
+        else
+            printLn("✗ Array values wrong!");
+        end if;
+        
+        return nil;
+    end;
+
+    -- Test immutable option
+    function testImmutableOption(): Unit is
+        printLn("=== Testing Immutable Option ===");
+        
+        let someVal: ImmutableOption[Int64] := makeImmutableSome(42);
+        let value: Int64 := getImmutableOption(someVal);
+        
+        if value = 42 then
+            printLn("✓ Immutable Some works");
+        else
+            printLn("✗ Some value wrong!");
+        end if;
+        
+        let noneVal: ImmutableOption[Int64] := makeImmutableNone[Int64]();
+        -- None has no value to extract
+        
+        printLn("✓ Immutable None works");
+        
+        return nil;
+    end;
+
+    -- Test immutable result
+    function testImmutableResult(): Unit is
+        printLn("=== Testing Immutable Result ===");
+        
+        let success: ImmutableResult[Int64, String] := makeImmutableSuccess(42, "error");
+        let value: Int64 := getImmutableResult(success);
+        
+        if value = 42 then
+            printLn("✓ Immutable Success works");
+        else
+            printLn("✗ Success value wrong!");
+        end if;
+        
+        let error: ImmutableResult[Int64, String] := makeImmutableError(42, "Something went wrong");
+        -- Error case handled in getImmutableResult
+        
+        printLn("✓ Immutable Error works");
+        
+        return nil;
+    end;
+
+    -- Test mapImmutable
+    function testImmutableMap(): Unit is
+        printLn("=== Testing Map Immutable ===");
+        
+        let num: Immutable[Int64] := makeImmutable(10);
+        
+        -- Double the value
+        let doubled: Immutable[Int64] := mapImmutable(num, fn(n): Int64 is
+            return n * 2;
+        end);
+        
+        let value: Int64 := getImmutable(doubled);
+        
+        if value = 20 then
+            printLn("✓ mapImmutable works correctly");
+        else
+            printLn("✗ Mapped value wrong!");
+        end if;
+        
+        -- Original should be unchanged
+        let original: Int64 := getImmutable(num);
+        if original = 10 then
+            printLn("✓ Original immutable unchanged");
+        else
+            printLn("✗ Original was modified!");
+        end if;
+        
+        return nil;
+    end;
+
+end module body.

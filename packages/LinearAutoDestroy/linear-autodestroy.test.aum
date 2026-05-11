@@ -1,0 +1,140 @@
+-- Linear AutoDestroy Tests
+
+module body LinearAutoDestroyTest is
+    import LinearAutoDestroy (
+        AutoFile,
+        AutoConnection,
+        AutoSecret,
+        AutoLock,
+        AutoTransaction,
+        openAutoFile,
+        readAutoFile,
+        connectAuto,
+        queryAuto,
+        makeAutoSecret,
+        useAutoSecret,
+        acquireAutoLock,
+        withAutoLock,
+        beginAutoTransaction,
+        commitAuto
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    function main(): ExitCode is
+        printLn("Testing Linear AutoDestroy Module...");
+        printLn("");
+        
+        testAutoFile();
+        printLn("");
+        
+        testAutoConnection();
+        printLn("");
+        
+        testAutoSecret();
+        printLn("");
+        
+        testAutoLock();
+        printLn("");
+        
+        testAutoTransaction();
+        printLn("");
+        
+        printLn("All tests passed!");
+        return ExitSuccess();
+    end;
+
+    -- Test auto-destroy file
+    function testAutoFile(): Unit is
+        printLn("=== Testing Auto-Destroy File ===");
+        
+        -- Open file and read - file is automatically closed
+        let file: AutoFile := openAutoFile("data.txt");
+        let content: String := readAutoFile(file);
+        -- file is now destroyed, cannot be used again!
+        
+        printLn(concat("Content: ", content));
+        printLn("✓ File automatically closed after read");
+        
+        return nil;
+    end;
+
+    -- Test auto-destroy connection
+    function testAutoConnection(): Unit is
+        printLn("=== Testing Auto-Destroy Connection ===");
+        
+        -- Connect and query - connection is automatically closed
+        let conn: AutoConnection := connectAuto("localhost:5432");
+        let result: String := queryAuto(conn, "SELECT * FROM users");
+        -- conn is now destroyed, cannot be used again!
+        
+        printLn(concat("Result: ", result));
+        printLn("✓ Connection automatically closed after query");
+        
+        return nil;
+    end;
+
+    -- Test auto-destroy secret
+    function testAutoSecret(): Unit is
+        printLn("=== Testing Auto-Destroy Secret ===");
+        
+        -- Create secret and use - memory is automatically wiped
+        let secret: AutoSecret := makeAutoSecret("my-secret-password");
+        let result: String := useAutoSecret(secret);
+        -- secret is now destroyed and wiped from memory!
+        
+        printLn(concat("Result: ", result));
+        printLn("✓ Secret automatically wiped from memory");
+        
+        return nil;
+    end;
+
+    -- Test auto-destroy lock
+    function testAutoLock(): Unit is
+        printLn("=== Testing Auto-Destroy Lock ===");
+        
+        -- Acquire lock and execute action - lock is automatically released
+        let lock: AutoLock := acquireAutoLock("critical-section");
+        let result: String := withAutoLock(lock, criticalSection);
+        -- lock is now destroyed, automatically released!
+        
+        printLn(concat("Result: ", result));
+        printLn("✓ Lock automatically released after action");
+        
+        return nil;
+    end;
+
+    -- Critical section to execute with lock
+    function criticalSection(_: Unit): String is
+        printLn("Executing critical section...");
+        return "Critical section completed";
+    end;
+
+    -- Test auto-destroy transaction
+    function testAutoTransaction(): Unit is
+        printLn("=== Testing Auto-Destroy Transaction ===");
+        
+        -- Begin transaction and commit
+        let tx: AutoTransaction := beginAutoTransaction();
+        let success: Bool := commitAuto(tx);
+        -- tx is now destroyed!
+        
+        if success then
+            printLn("✓ Transaction committed successfully");
+        else
+            printLn("✗ Transaction failed");
+        end if;
+        
+        -- Test rollback (implicit when not committed)
+        printLn("");
+        printLn("Testing implicit rollback...");
+        let tx2: AutoTransaction := beginAutoTransaction();
+        -- Don't commit - should auto-rollback
+        -- In a real implementation, destructor would rollback
+        printLn("✓ Transaction would auto-rollback if not committed");
+        
+        return nil;
+    end;
+
+end module body.

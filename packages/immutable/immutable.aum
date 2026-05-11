@@ -1,0 +1,191 @@
+-- Immutable Module Body
+-- Implementation of immutable data structures
+
+module body Immutable is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate,
+        load,
+        store
+    );
+    import Austral.String (
+        length,
+        nth,
+        concat
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    -- Generic immutable wrapper
+    generic [T: Type]
+    function makeImmutable(value: T): Immutable[T] is
+        return Immutable(value => value);
+    end;
+
+    -- Extract value (immutable, no copy needed)
+    generic [T: Type]
+    function getImmutable(immutable: Immutable[T]): T is
+        return immutable.value;
+    end;
+
+    -- Transform immutable value (returns new immutable)
+    generic [T: Type, U: Type]
+    function mapImmutable(
+        immutable: Immutable[T],
+        transformer: Function[T, U]
+    ): Immutable[U] is
+        let newValue: U := transformer(immutable.value);
+        return makeImmutable(newValue);
+    end;
+
+    -- Scoped immutable operations
+    generic [T: Type, U: Type]
+    function withImmutable(
+        immutable: Immutable[T],
+        action: Function[T, U]
+    ): U is
+        return action(immutable.value);
+    end;
+
+    -- Pattern matching helpers
+    generic [T: Type, U: Type]
+    function matchImmutable[T: Type, U: Type](
+        immutable: Immutable[T],
+        onValue: Function[T, U]
+    ): U is
+        return onValue(immutable.value);
+    end;
+
+    -- Immutable String implementation
+    function makeImmutableString(content: String): ImmutableString is
+        let len: Nat64 := length(content);
+        let ptr: Pointer[Nat8] := allocate(len);
+        
+        -- Copy string to immutable memory
+        let i: Nat64 := 0;
+        while i < len do
+            let byte: Nat8 := nth(content, i);
+            store(ptr, i, byte);
+            i := i + 1;
+        end while;
+        
+        return ImmutableString(
+            data => ptr,
+            length => len
+        );
+    end;
+
+    function getImmutableString(str: ImmutableString): String is
+        -- Create new string from immutable buffer
+        let result: String := "";
+        let i: Nat64 := 0;
+        
+        while i < str.length do
+            let byte: Nat8 := load(str.data, i);
+            -- Convert byte to char and append
+            let char: String := byteToChar(byte);
+            result := concat(result, char);
+            i := i + 1;
+        end while;
+        
+        return result;
+    end;
+
+    -- Helper: convert byte to char string
+    function byteToChar(byte: Nat8): String is
+        if byte >= 32 and byte < 127 then
+            -- Printable ASCII
+            let char: Char := cast[Nat8, Char](byte);
+            return charToString(char);
+        else
+            return "";
+        end if;
+    end;
+
+    -- Immutable Number implementations
+    function makeImmutableInt(value: Int64): ImmutableNumber[Int64] is
+        return ImmutableNumber(value => value);
+    end;
+
+    function makeImmutableNat(value: Nat64): ImmutableNumber[Nat64] is
+        return ImmutableNumber(value => value);
+    end;
+
+    function getImmutableNumber(num: ImmutableNumber[N]): N is
+        return num.value;
+    end;
+
+    -- Immutable Array implementation
+    generic [T: Type, N: Nat]
+    function makeImmutableArray(values: FixedArray[T, N]): ImmutableArray[T, N] is
+        return ImmutableArray(data => values);
+    end;
+
+    generic [T: Type, N: Nat]
+    function getImmutableArray(arr: ImmutableArray[T, N]): FixedArray[T, N] is
+        return arr.data;
+    end;
+
+    generic [T: Type, N: Nat]
+    function immutableArrayLength(arr: ImmutableArray[T, N]): Nat is
+        return N;
+    end;
+
+    -- Immutable Option implementations
+    generic [T: Type]
+    function makeImmutableSome(value: T): ImmutableOption[T] is
+        return Some(value => value);
+    end;
+
+    generic [T: Type]
+    function makeImmutableNone[T: Type]: ImmutableOption[T] is
+        return None;
+    end;
+
+    generic [T: Type]
+    function getImmutableOption(opt: ImmutableOption[T]): T is
+        case opt of
+            when Some(value) then
+                return value;
+            when None then
+                -- This should never happen if used correctly
+                return default[T];
+        end case;
+    end;
+
+    -- Immutable Result implementations
+    generic [T: Type, E: Type]
+    function makeImmutableSuccess[T: Type, E: Type](value: T): ImmutableResult[T, E] is
+        return Success(value => value);
+    end;
+
+    generic [T: Type, E: Type]
+    function makeImmutableError[T: Type, E: Type](error: E): ImmutableResult[T, E] is
+        return Error(error => error);
+    end;
+
+    generic [T: Type, E: Type]
+    function getImmutableResult(result: ImmutableResult[T, E]): T is
+        case result of
+            when Success(value) then
+                return value;
+            when Error(error) then
+                -- In production, handle error properly
+                return default[T];
+        end case;
+    end;
+
+    -- Immutable Record with capability
+    generic [T: Type]
+    function makeImmutableRecord(value: T): ImmutableAccess[T] is
+        -- Return capability that only allows reading
+        return ImmutableAccess(
+            getValue = fn(): T is
+                return value;
+            end
+        );
+    end;
+
+end module body.

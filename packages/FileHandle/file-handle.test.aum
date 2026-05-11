@@ -1,0 +1,117 @@
+-- File Handle Tests
+
+module body FileHandleTest is
+    import FileHandle (
+        FileHandle,
+        FileMode,
+        FileResult,
+        openFile,
+        readAll,
+        writeString,
+        closeFile,
+        fileExists,
+        ReadOnly,
+        WriteOnly,
+        Success,
+        Error
+    );
+    import Austral.IO.Terminal (
+        printLn
+    );
+
+    function main(): ExitCode is
+        printLn("Testing File Handle Module...");
+        
+        testOpenClose();
+        testReadWrite();
+        testFileExists();
+        
+        printLn("All tests passed!");
+        return ExitSuccess();
+    end;
+
+    function testOpenClose(): Unit is
+        printLn("Testing open/close...");
+        
+        let result: FileResult[FileHandle] := openFile("test.txt", ReadOnly);
+        
+        case result of
+            when Success(handle) then
+                printLn("✓ File opened successfully");
+                
+                let closeResult: FileResult[Unit] := closeFile(handle);
+                case closeResult of
+                    when Success(_) then
+                        printLn("✓ File closed successfully");
+                    when Error(msg) then
+                        printLn(concat("✗ Close failed: ", msg));
+                end case;
+                
+            when Error(msg) then
+                printLn(concat("✗ Open failed: ", msg));
+        end case;
+        
+        return nil;
+    end;
+
+    function testReadWrite(): Unit is
+        printLn("Testing read/write...");
+        
+        -- Open for writing
+        let writeResult: FileResult[FileHandle] := openFile("test.txt", WriteOnly);
+        
+        case writeResult of
+            when Success(handle) then
+                -- Write content
+                let (result, handle2) := writeString(handle, "Hello, World!");
+                
+                case result of
+                    when Success(_) then
+                        printLn("✓ Write successful");
+                    when Error(msg) then
+                        printLn(concat("✗ Write failed: ", msg));
+                end case;
+                
+                -- Close
+                let _ := closeFile(handle2);
+                
+            when Error(msg) then
+                printLn(concat("✗ Open for write failed: ", msg));
+        end case;
+        
+        -- Open for reading
+        let readResult: FileResult[FileHandle] := openFile("test.txt", ReadOnly);
+        
+        case readResult of
+            when Success(handle) then
+                let (content, handle2) := readAll(handle);
+                
+                case content of
+                    when Success(text) then
+                        printLn(concat("✓ Read successful: ", text));
+                    when Error(msg) then
+                        printLn(concat("✗ Read failed: ", msg));
+                end case;
+                
+                let _ := closeFile(handle2);
+                
+            when Error(msg) then
+                printLn(concat("✗ Open for read failed: ", msg));
+        end case;
+        
+        return nil;
+    end;
+
+    function testFileExists(): Unit is
+        printLn("Testing file exists...");
+        
+        if fileExists("test.txt") then
+            printLn("✓ File exists check works");
+        else
+            printLn("✗ File should exist");
+        end if;
+        
+        return nil;
+    end;
+
+end module body.

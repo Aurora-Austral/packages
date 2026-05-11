@@ -1,0 +1,77 @@
+-- File Handle Module Body
+-- Implementation of safe file operations
+
+module body FileHandle is
+    import Austral.String (
+        length,
+        concat
+    );
+
+    -- Open file
+    function openFile(path: String, mode: FileMode): FileResult[FileHandle] is
+        -- In production, this would call POSIX open()
+        -- For demo, we simulate with a fake file descriptor
+        
+        let fd: Int32 := 42; -- Simulated file descriptor
+        
+        let handle: FileHandle := FileHandle(
+            fd => fd,
+            path => path,
+            mode => mode
+        );
+        
+        return Success(handle);
+    end;
+
+    -- Read entire file
+    function readAll(handle: FileHandle): (FileResult[String], FileHandle) is
+        -- In production, would read from actual file
+        let content: String := "File content from: " ++ handle.path;
+        return (Success(content), handle);
+    end;
+
+    -- Read N bytes
+    function readBytes(handle: FileHandle, count: Nat64): (FileResult[String], FileHandle) is
+        let content: String := "Read " ++ intToString(count) ++ " bytes";
+        return (Success(content), handle);
+    end;
+
+    -- Write string
+    function writeString(handle: FileHandle, content: String): (FileResult[Unit], FileHandle) is
+        -- In production, would write to actual file
+        return (Success(nil), handle);
+    end;
+
+    -- Append string
+    function appendString(handle: FileHandle, content: String): (FileResult[Unit], FileHandle) is
+        -- In production, would append to actual file
+        return (Success(nil), handle);
+    end;
+
+    -- Close file (consumes handle)
+    function closeFile(handle: FileHandle): FileResult[Unit] is
+        -- In production, would call POSIX close()
+        -- Handle is consumed here - cannot be used again
+        return Success(nil);
+    end;
+
+    -- Get file size
+    function fileSize(handle: FileHandle): (FileResult[Nat64], FileHandle) is
+        -- In production, would call stat()
+        let size: Nat64 := 1024; -- Simulated size
+        return (Success(size), handle);
+    end;
+
+    -- Check if file exists
+    function fileExists(path: String): Bool is
+        -- In production, would call access() or stat()
+        return true; -- Simulated
+    end;
+
+    -- Delete file
+    function deleteFile(path: String): FileResult[Unit] is
+        -- In production, would call unlink()
+        return Success(nil);
+    end;
+
+end module body.

@@ -1,0 +1,49 @@
+-- Crypto Hash Module Interface
+-- Provides cryptographically secure hashing with linear types
+-- Ensures sensitive data is consumed and cannot leak
+
+module CryptoHash is
+    import Austral.Memory (
+        Pointer,
+        allocate,
+        deallocate,
+        load,
+        store
+    );
+
+    -- Sensitive data that must be consumed (Linear type)
+    record SecretData: Linear is
+        data: Pointer[Nat8];
+        length: Nat64;
+    end;
+
+    -- Hash result (can be copied and shared)
+    record Hash256: Free is
+        bytes: FixedArray[Nat8, 32];
+    end;
+
+    record Hash512: Free is
+        bytes: FixedArray[Nat8, 64];
+    end;
+
+    -- Create SecretData from string (consumes the string)
+    function makeSecretData(content: String): SecretData;
+
+    -- SHA-256 hashing (consumes SecretData)
+    function sha256(data: SecretData): Hash256;
+
+    -- SHA-512 hashing (consumes SecretData)
+    function sha512(data: SecretData): Hash512;
+
+    -- Constant-time comparison (prevents timing attacks)
+    function compareHash256(a: Hash256, b: Hash256): Bool;
+    function compareHash512(a: Hash512, b: Hash512): Bool;
+
+    -- Convert hash to hex string
+    function hash256ToHex(hash: Hash256): String;
+    function hash512ToHex(hash: Hash512): String;
+
+    -- HMAC-SHA256 (Hash-based Message Authentication Code)
+    function hmacSha256(key: SecretData, message: SecretData): Hash256;
+
+end module.

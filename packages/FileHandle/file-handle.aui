@@ -1,0 +1,54 @@
+-- File Handle Module Interface
+-- Safe file manipulation with linear types
+-- Ensures files are properly closed
+
+module FileHandle is
+    -- File handle as linear type - must be closed
+    record FileHandle: Linear is
+        fd: Int32;
+        path: String;
+        mode: FileMode;
+    end;
+
+    -- File modes
+    union FileMode: Free is
+        case ReadOnly;
+        case WriteOnly;
+        case ReadWrite;
+        case Append;
+    end;
+
+    -- File operations result
+    union FileResult[T: Type]: Free is
+        case Success(value: T);
+        case Error(message: String);
+    end;
+
+    -- Open file (returns linear FileHandle)
+    function openFile(path: String, mode: FileMode): FileResult[FileHandle];
+
+    -- Read entire file content (consumes handle)
+    function readAll(handle: FileHandle): (FileResult[String], FileHandle);
+
+    -- Read N bytes (consumes and returns handle)
+    function readBytes(handle: FileHandle, count: Nat64): (FileResult[String], FileHandle);
+
+    -- Write string to file (consumes and returns handle)
+    function writeString(handle: FileHandle, content: String): (FileResult[Unit], FileHandle);
+
+    -- Append string to file (consumes and returns handle)
+    function appendString(handle: FileHandle, content: String): (FileResult[Unit], FileHandle);
+
+    -- Close file (consumes handle)
+    function closeFile(handle: FileHandle): FileResult[Unit];
+
+    -- Get file size
+    function fileSize(handle: FileHandle): (FileResult[Nat64], FileHandle);
+
+    -- Check if file exists
+    function fileExists(path: String): Bool;
+
+    -- Delete file
+    function deleteFile(path: String): FileResult[Unit];
+
+end module.
